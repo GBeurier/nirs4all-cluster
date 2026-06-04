@@ -1,0 +1,30 @@
+# Matrix job (design Level 1): pipelines x datasets -> one task per combination.
+#
+# The server decomposes this into N tasks (here 1 pipeline x 3 datasets = 3),
+# distributes them across workers, then aggregates a ranking and selects the
+# best model. Each task is an independent nirs4all.run() with its own workspace.
+#
+#   n4cluster submit examples/job.matrix.yaml --wait
+type: nirs4all.run
+name: pls-corn-targets
+pipelines:
+  - kind: path
+    path: /home/delete/nirs4all/nirs4all-cluster/examples/pipelines/pls.yaml
+datasets:
+  - kind: shared_path
+    name: corn-moisture
+    path: /home/delete/nirs4all/nirs4all-data/regression/CORN/Corn_Moisture_80_WangStyle_m5spec
+  - kind: shared_path
+    name: corn-oil
+    path: /home/delete/nirs4all/nirs4all-data/regression/CORN/Corn_Oil_80_WangStyle_m5spec
+  - kind: shared_path
+    name: corn-protein
+    path: /home/delete/nirs4all/nirs4all-data/regression/CORN/Corn_Protein_80_WangStyle_m5spec
+params:
+  random_state: 42
+rank_metric: best_rmse
+rank_mode: min
+outputs:
+  export_best_model: true
+retry:
+  max_attempts: 2
