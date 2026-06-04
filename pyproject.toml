@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nirs4all-cluster"
+version = "0.0.1"
+description = "Prototype distributed job queue for nirs4all.run() — server + polling workers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "nirs4all" }]
+keywords = ["nirs4all", "nirs", "cluster", "distributed", "job-queue"]
+
+# Server + client + worker transport only. nirs4all itself is provided by the
+# worker's pre-provisioned environment (see PROTOTYPE_DESIGN.md non-goals); it is
+# imported lazily and guarded, exactly like nirs4all-studio guards its import.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "python-multipart>=0.0.9",
+    "websockets>=12",
+    "packaging>=23",
+]
+
+[project.optional-dependencies]
+# Installed on a worker host on TOP of a real nirs4all environment. We do not
+# pin nirs4all here: the prototype is meant to run against the sibling editable
+# checkout, and the design forbids dynamic dependency provisioning on workers.
+worker = []
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "types-PyYAML",
+]
+
+[project.scripts]
+n4cluster = "nirs4all_cluster.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nirs4all_cluster"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4"]
+# UP042: keep `str, Enum` (explicit, pydantic-friendly, `.value` everywhere) over StrEnum.
+ignore = ["E501", "UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

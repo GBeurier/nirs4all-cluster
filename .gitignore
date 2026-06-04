@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+
+# Cluster runtime state (server queue + object store, worker task sandboxes)
+cluster-state/
+worker-state/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local artifacts / results
+results/
+*.n4a
