@@ -1,0 +1,27 @@
+# Uploaded-input job: the pipeline travels inline (no shared filesystem needed)
+# and the dataset is an artifact the client uploaded to the server first.
+#
+# 'inline_json' carries the pipeline config in the job itself; the worker writes
+# it to a file and feeds it to nirs4all.run(). For the dataset 'artifact' kind,
+# upload a zip first and paste the returned id:
+#
+#   ID=$(python -c "from nirs4all_cluster import ClusterClient as C; \
+#       print(C('http://127.0.0.1:8765').upload_artifact('corn.zip'))")
+#   # then set dataset.artifact_id below to $ID and submit.
+type: nirs4all.run
+name: pls-inline
+pipeline:
+  kind: inline_json
+  inline:
+    pipeline:
+      - class: sklearn.preprocessing.StandardScaler
+      - class: sklearn.cross_decomposition.PLSRegression
+        params:
+          n_components: 10
+dataset:
+  kind: artifact
+  artifact_id: REPLACE_WITH_UPLOADED_ARTIFACT_ID
+params:
+  random_state: 42
+outputs:
+  export_best_model: true

@@ -1,0 +1,32 @@
+# Atomic job (design Level 0): one nirs4all.run() on one worker.
+#
+# Both the pipeline and the dataset are referenced by paths that every worker
+# can see (a shared/mounted filesystem) — the simplest, most realistic case for
+# a lab cluster. Adjust the absolute paths to your environment.
+#
+#   n4cluster submit examples/job.shared-path.yaml --wait --out ./results
+type: nirs4all.run
+name: pls-grapevine
+pipeline:
+  kind: path
+  path: /home/delete/nirs4all/nirs4all-cluster/examples/pipelines/pls.yaml
+dataset:
+  kind: shared_path
+  path: /home/delete/nirs4all/nirs4all-data/regression/GRAPEVINE_LeafTraits/PSI_spxyG70_30_byCultivar_MicroNIR_NeoSpectra
+params:
+  random_state: 42
+  refit: true
+requirements:
+  labels: {}
+  # Route only to workers that declared a compatible nirs4all (availability +
+  # version). The server adds a presence requirement for nirs4all automatically;
+  # pin a range here when you need one.
+  packages:
+    nirs4all: ">=0.9,<0.10"
+outputs:
+  export_best_model: true
+  keep_task_workspace: false
+rank_metric: best_rmse
+rank_mode: min
+retry:
+  max_attempts: 2
