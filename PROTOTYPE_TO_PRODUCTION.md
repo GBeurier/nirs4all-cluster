@@ -46,6 +46,14 @@ Le prototype est conçu pour que cette bascule soit possible dans les deux sens 
 utilisé en boîte noire, donc le même contrat (`pipeline`, `dataset`, `params`) alimenterait un backend
 Dask sans réécriture côté client.
 
+> **Au-delà du grain « run entier ».** La vraie valeur (et difficulté) est la distribution **fine** :
+> sous-arbres, points de sweep et folds répartis (refit-with-folds compris), pas des `run()` entiers.
+> L'inspection du moteur `nirs4all` (unité de step typée, `DataSelector` = vue de données, scopes
+> `(variant, fold, phase)`, artefacts content-addressed + clé de cache de calcul, trace/replay,
+> sélection/refit déterministes) montre que le moteur a déjà ~80 % des abstractions nécessaires, mais
+> câblées in-process/mono-hôte. Cartographie complète des **points d'extraction** et de ce qui manque
+> (plan de contrôle distribué) : **[`docs/DISTRIBUTED_EXECUTION_DESIGN.md`](docs/DISTRIBUTED_EXECUTION_DESIGN.md)**.
+
 ## 3. Mesures encore à produire avant un go
 
 Le go reste conditionné (README §go/no-go). Restent à mesurer :
