@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nirs4all-cluster"
 version = "0.0.1"
-description = "Prototype distributed job queue for nirs4all.run() — server + polling workers."
+description = "Public alpha distributed job queue prototype for nirs4all.run() — server + polling workers."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

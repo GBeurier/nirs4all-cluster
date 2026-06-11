@@ -1,12 +1,12 @@
 # nirs4all-cluster
 
-> **Statut : prototype de validation, hors roadmap produit.** Ce dépôt implémente le
-> prototype décrit dans [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md). Son but est de **mesurer**
-> si une file de jobs distribuée pour `nirs4all.run()` est justifiée — pas de devenir une
-> plateforme. La vision de l'écosystème recommande de **ne pas** ouvrir un dépôt cluster complet
-> prématurément (anti-pattern « plateforme ML ») ; ce prototype sert précisément à produire les
-> mesures go/no-go ci-dessous avant toute décision. Voir
-> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md) pour le passage éventuel en production.
+> **Statut : public alpha / prototype de validation.** Ce dépôt est public pour que
+> l'architecture, les tests et les mesures soient inspectables. Il reste un prototype :
+> son but est de mesurer si une file de jobs distribuée pour `nirs4all.run()` est
+> justifiée, pas de promettre une plateforme cluster prête à exploiter. Voir
+> [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) pour la conception et
+> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md) pour les conditions
+> de passage éventuel en produit.
 
 Exécution **distribuée** de pipelines `nirs4all` (client / serveur / workers) : un coordinateur
 reçoit des jobs et dispatche le travail à des workers qui pollent le serveur. Le prototype
@@ -99,7 +99,7 @@ Résultats mesurés sur `nirs4all-data` (voir [`WORKLOG.md`](WORKLOG.md)) : job 
 dataset`, et **parité métrique exacte vs `nirs4all.run()` local (diff = 0.0)** — au-delà du critère
 go/no-go ≤ 1e-10.
 
-## Critères go/no-go pour ouvrir réellement ce chantier
+## Critères go/no-go pour passer en produit
 
 Le go reste conditionnel à **toutes** ces conditions :
 
@@ -111,8 +111,9 @@ Le go reste conditionnel à **toutes** ces conditions :
    environnements lourds TF/Torch/JAX, coût des transferts, idempotence/reprise, quotas/fairness,
    scheduling hétérogène). → recensés dans `PROTOTYPE_TO_PRODUCTION.md`.
 
-Sans ces conditions : **no-go** — et l'option par défaut reste un backend Dask opt-in dans `nirs4all`,
-pas ce dépôt. Le prototype existe pour **éclairer** cette décision, pas pour la préempter.
+Sans ces conditions : **no-go produit** — et l'option par défaut reste un backend Dask opt-in dans
+`nirs4all`, pas une plateforme maison. Le dépôt reste public comme banc de mesure et référence de
+conception, pas comme engagement de roadmap produit.
 
 ## Non-objectifs (rappel)
 

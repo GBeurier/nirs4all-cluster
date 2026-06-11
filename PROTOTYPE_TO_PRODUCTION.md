@@ -6,9 +6,9 @@ journal). Il s'adresse à la décision : *faut-il faire de ce prototype un produ
 comment ?*
 
 > **Position de départ (inchangée).** L'option par défaut recommandée par l'écosystème reste un
-> **backend d'exécution opt-in dans `nirs4all`** (p. ex. `nirs4all[dask]`), **pas** un dépôt cluster
-> complet. Le prototype existe pour produire des mesures et dé-risquer la décision, pas pour la
-> préempter. Voir les critères go/no-go du `README.md`.
+> **backend d'exécution opt-in dans `nirs4all`** (p. ex. `nirs4all[dask]`), **pas** une plateforme
+> cluster maison exploitée par défaut. Le dépôt est public comme prototype auditable : il produit des
+> mesures et dé-risque la décision, sans la préempter. Voir les critères go/no-go du `README.md`.
 
 ## 1. Ce que le prototype a démontré
 
