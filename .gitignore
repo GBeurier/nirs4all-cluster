@@ -19,3 +19,10 @@ worker-state/
 # Local artifacts / results
 results/
 *.n4a
+
+# local code-intelligence index
+.codegraph/
+
+# coverage artifacts
+.coverage
+coverage.xml

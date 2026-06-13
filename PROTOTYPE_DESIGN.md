@@ -1,75 +1,74 @@
 # Prototype design - nirs4all-cluster
 
-## Objectif
+## Objective
 
-Construire un prototype Python isole, dans ce depot, qui permet a des clients
-`nirs4all` de soumettre des jobs a un serveur, puis de les executer sur plusieurs
-workers. Le prototype doit valider le besoin "queue distribuee de jobs
-nirs4all" sans modifier `nirs4all`, `nirs4all-studio`, `nirs4all-io`,
-`nirs4all-methods` ou les autres bibliotheques de l'ecosysteme.
+Build an isolated Python prototype in this repository that allows users of
+`nirs4all` to submit jobs to one server, then execute them on several
+workers. The prototype must validate the need for a “distributed job queue”
+without modifying `nirs4all`, `nirs4all-studio`, `nirs4all-io`,
+`nirs4all-methods`, or any other ecosystem library.
 
-Le prototype n'est pas une plateforme definitive. Il sert a mesurer :
+The prototype is not a definitive platform. It is used to measure:
 
-- si l'unite de travail distribuee est bien choisie ;
-- si les resultats restent compatibles avec une execution locale ;
-- si le transfert de donnees et d'artefacts est acceptable ;
-- quelles garanties reseau, reprise et securite deviennent indispensables.
+- whether the distributed work unit is well chosen;
+- whether the results remain compatible with local execution;
+- whether transfer of data and artifacts is acceptable;
+- which network, recovery, and security guarantees become essential.
 
-## Contexte observe dans l'ecosysteme
+## Context observed in the ecosystem
 
-- `nirs4all.run()` est l'entree publique stable pour lancer un pipeline sur un
-  dataset. Elle accepte un pipeline, une liste de pipelines, un dataset ou une
-  liste de datasets, puis execute le produit cartesien.
-- `PipelineRunner` expose deja `n_jobs` pour paralleliser localement des variants
-  avec `joblib/loky`. En mode parallele, les workers locaux n'ecrivent pas
-  directement dans le `WorkspaceStore`; le parent reconstruit ensuite l'etat.
-  C'est un signal important : en cluster, chaque worker doit produire un resultat
-  isole, puis le serveur doit agreger.
-- Le workspace `nirs4all` est un dossier contenant `store.sqlite`, des arrays et
-  des artefacts. Il ne faut pas faire ecrire plusieurs machines dans le meme
-  workspace SQLite.
-- `nirs4all-studio` possede deja un `JobManager` en memoire, des routes FastAPI
-  et des WebSockets de progression. C'est utile pour l'UX, mais ce n'est pas une
-  queue durable multi-machine.
-- `nirs4all-datasets` et `nirs4all-io` donnent une direction pour les datasets :
-  references versionnees, checksums, cache local, materialisation tardive.
+- `nirs4all.run()` is the stable public entry point for launching a pipeline on
+  a dataset. It accepts a pipeline, a list of pipelines, a dataset, or a list
+  of datasets, then executes the Cartesian product.
+- `PipelineRunner` already exposes `n_jobs` to parallelize variants locally
+  with `joblib/loky`. In parallel mode, local workers do not write directly
+  into the `WorkspaceStore`; the parent then rebuilds the state. This is an
+  important signal: in a cluster, each worker must produce an isolated result,
+  then the server must aggregate it.
+- The `nirs4all` workspace is a folder containing `store.sqlite`, arrays, and
+  artifacts. You should not write from several machines into the same SQLite
+  workspace.
+- `nirs4all-studio` already has an in-memory `JobManager`, FastAPI routes, and
+  progress WebSockets. It is useful for UX, but it is not a durable
+  multi-machine queue.
+- `nirs4all-datasets` and `nirs4all-io` point the way for datasets: versioned
+  references, checksums, local cache, late materialization.
 
-## Use cases a couvrir
+## Use cases to cover
 
 ### MVP
 
-1. Soumettre un job `nirs4all.run()` depuis une CLI ou une petite SDK Python.
-2. Demarrer un serveur local ou LAN.
-3. Connecter plusieurs workers Python preconfigures.
-4. Assigner les jobs aux workers selon disponibilite et capacites simples.
-5. Suivre statut, logs, progression approximative et resultats.
-6. Telecharger les artefacts de sortie : resume JSON, logs, modele `.n4a`,
-   workspace de task optionnel.
+1. Submit a `nirs4all.run()` job from a CLI or a small Python SDK.
+2. Start a local or LAN server.
+3. Connect several preconfigured Python workers.
+4. Assign jobs to workers based on availability and simple capabilities.
+5. Track status, logs, approximate progress and results.
+6. Download the output artifacts: JSON summary, logs, `.n4a` model, optional
+   task workspace.
 
-### Cas a anticiper
+### Cases to anticipate
 
-- Lancement depuis Studio : le backend Studio soumettrait au cluster au lieu
-  d'utiliser son `JobManager` local.
-- Batch `pipelines x datasets` : decomposition en plusieurs tasks
-  independantes.
-- Grid search / HPO : decomposition en variants explicites, puis aggregation.
-- Workers heterogenes : CPU, GPU, RAM, backend `torch/tensorflow/jax`, versions.
-- Arena interne : batch nocturne sur datasets et scenarios cures.
-- Calcul federe : dataset restant sur un worker/site donne, seul le resultat
-  remonte.
-- Reprise apres crash worker ou serveur.
+- Launching from Studio: the Studio backend would submit to the cluster instead
+  of using the local `JobManager`.
+- Batch `pipelines x datasets`: decomposition into several independent tasks.
+- Grid search / HPO: decomposition into explicit variants, then aggregation.
+- Heterogeneous workers: CPU, GPU, RAM, `torch/tensorflow/jax` backend, versions.
+- Internal arena: nightly batch on datasets and edge-case scenarios.
+- Federated calculation: dataset remains on a given worker/site; only the
+  result comes back.
+- Recovery after worker or server crash.
 
-## Non-objectifs du prototype
+## Non-goals of the prototype
 
-- Pas de modification des autres bibliotheques.
-- Pas de multi-tenancy ouvert a des tiers.
-- Pas de sandbox securise pour code Python arbitraire.
-- Pas de scheduler avance type Kubernetes, Ray ou Dask.
-- Pas d'ecriture concurrente dans un workspace `nirs4all` partage.
-- Pas de garantie de parite parfaite sur les jobs decomposes tant que les
-  mesures de non-regression ne sont pas ecrites.
+- No modification of other libraries.
+- No multi-tenancy open to third parties.
+- No secure sandbox for arbitrary Python code.
+- No advance scheduler such as Kubernetes, Ray or Dask.
+- No concurrent writing in a shared `nirs4all` workspace.
+- No guarantee of perfect parity on decomposed jobs until the non-regression
+  measures are written.
 
-## Architecture proposee
+## Proposed architecture
 
 ```
 submitter Python/CLI/Studio
@@ -86,57 +85,57 @@ cluster server
         | long-polling HTTP + heartbeat
         |
 workers nirs4all
-  - environnement Python preinstalle
-  - sandbox de task par dossier
-  - nirs4all.run(..., workspace_path=task_workspace)
-  - upload des resultats
+  - preinstalled Python environment
+  - task sandbox per folder
+  - `nirs4all.run(..., workspace_path=task_workspace)`
+  - upload results
 ```
 
-Choix reseau : les workers pollent le serveur au lieu de recevoir des pushes.
-C'est plus simple pour un LAN, des machines derriere NAT, et un prototype. Le
-serveur garde une API publique stable pour les clients et une API worker separee.
+Network choice: workers poll the server instead of receiving pushes.
+It's simpler for a LAN, machines behind NAT, and a prototype. THE
+server maintains a stable public API for clients and a separate worker API.
 
-## Composants
+## Components
 
-### Serveur
+### Server
 
-Responsabilites :
+Responsibilities:
 
-- recevoir les submissions ;
-- valider et persister les jobs ;
-- materialiser les artefacts d'entree ;
-- decomposer un job logique en tasks executables ;
-- enregistrer les workers et leurs capacites ;
-- attribuer des leases de tasks ;
-- suivre heartbeats, retries, timeouts et annulations ;
-- stocker les events, logs et resultats ;
-- exposer REST + WebSocket/SSE aux clients.
+- receive submissions;
+- validate and persist jobs;
+- materialize the input artifacts;
+- decompose a logical job into executable tasks;
+- record workers and their capabilities;
+- assign task leases;
+- track heartbeats, retries, timeouts, and cancellations;
+- store events, logs, and results;
+- expose REST + WebSocket/SSE to clients.
 
 Implementation MVP :
 
 - FastAPI + Uvicorn ;
 - SQLite via `sqlite3` standard library ;
-- stockage d'artefacts sur disque par SHA-256 ;
-- scheduler FIFO avec priorite optionnelle ;
-- un process serveur unique.
+- storage of artifacts on disk by SHA-256;
+- FIFO scheduler with optional priority;
+- a single server process.
 
 ### Worker
 
-Responsabilites :
+Responsibilities:
 
-- s'enregistrer avec ses capacites ;
-- demander une task disponible ;
-- telecharger ou resoudre les inputs ;
-- creer un workspace de task isole ;
-- executer `nirs4all.run()` avec `workspace_path` dedie ;
-- capturer stdout/stderr/logs ;
-- exporter le meilleur modele si demande ;
-- uploader resultats et artefacts ;
-- envoyer heartbeat et progress events.
+- check in with your abilities;
+- request an available task;
+- download or resolve inputs;
+- create an isolated task workspace;
+- run `nirs4all.run()` with a dedicated `workspace_path`;
+- capture stdout/stderr/logs;
+- export the best model if requested;
+- upload results and artifacts;
+- send heartbeat and progress events.
 
-Le worker ne recoit pas de dependances a installer dynamiquement. Son
-environnement Python est provisionne avant demarrage. Les capacites declarees
-servent au routage.
+The worker is not given dependencies to install dynamically. Its Python
+environment is provisioned before startup. Declared capabilities are used for
+routing.
 
 ### Client Python
 
@@ -155,12 +154,12 @@ client.wait(job.id)
 result = client.get_result(job.id)
 ```
 
-Le client est volontairement mince : il parle au serveur, mais ne reimplemente
-pas `nirs4all`.
+The client is deliberately thin: it talks to the server, but does not reimplement
+`nirs4all`.
 
 ### CLI
 
-Commandes proposees :
+Proposed commands:
 
 ```bash
 n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state
@@ -172,28 +171,28 @@ n4cluster cancel <job_id>
 n4cluster artifacts <job_id> --out ./results
 ```
 
-## Modele de donnees
+## Data model
 
-### Entites
+### Entities
 
-- `Job` : demande logique soumise par un client.
-- `Task` : unite executable louee a un worker.
-- `Worker` : agent connecte, avec heartbeats et capacites.
-- `Lease` : attribution temporaire d'une task a un worker.
-- `Artifact` : blob adresse par hash, entree ou sortie.
-- `Event` : changement d'etat, log structure, progression.
+- `Job`: logical request submitted by a client.
+- `Task`: executable unit leased to a worker.
+- `Worker`: connected agent, with heartbeats and abilities.
+- `Lease`: temporary assignment of a task to a worker.
+- `Artifact`: blob address by hash, input or output.
+- `Event`: change of state, log structure, progress.
 
-### Etats job
+### Job states
 
 ```
 queued -> running -> succeeded
 queued -> cancelled
 running -> cancelling -> cancelled
 running -> failed
-failed -> queued    # retry manuel optionnel
+failed -> queued    # optional manual retry
 ```
 
-### Etats task
+### Task states
 
 ```
 queued -> leased -> running -> succeeded
@@ -203,8 +202,8 @@ running -> failed -> queued|failed
 running -> cancelled
 ```
 
-Une lease expire si le worker ne heartbeat plus. La task redevient `queued` tant
-que `attempt < max_attempts`.
+A lease expires if the worker stops heartbeating. The task becomes `queued` again
+when `attempt < max_attempts`.
 
 ### Tables SQLite
 
@@ -217,43 +216,43 @@ que `attempt < max_attempts`.
 - `artifacts(id, sha256, kind, path, size_bytes, created_at, metadata_json)`
 - `events(id, job_id, task_id, worker_id, ts, level, type, message, data_json)`
 
-## Granularite d'execution
+## Execution granularity
 
-### Niveau 0 - job atomique
+### Level 0 - atomic job
 
-Le serveur cree une task unique qui appelle `nirs4all.run()` sur un worker.
-C'est le plus rapide a implementer et utile pour distribuer plusieurs jobs
-independants.
+The server creates a single task that calls `nirs4all.run()` on a worker.
+It is the fastest to implement and useful for distributing several jobs
+independent.
 
-Limite : un gros grid search reste monolithique sur un worker.
+Limit: a large grid search remains monolithic on a worker.
 
-### Niveau 1 - matrice pipelines x datasets
+### Level 1 - pipeline x dataset matrix
 
-Si la submission contient plusieurs pipelines ou datasets explicites, le serveur
-cree une task par combinaison. Chaque task execute un `nirs4all.run()` simple,
-avec son propre workspace. Le serveur agrege ensuite les metriques.
+If the submission contains multiple explicit pipelines or datasets, the server
+creates one task per combination. Each task executes a simple `nirs4all.run()`,
+with its own workspace. The server then aggregates the metrics.
 
-Cette decomposition est naturelle parce que `nirs4all.run()` fait deja le
-produit cartesien en local.
+This decomposition is natural because `nirs4all.run()` already does the
+performs the Cartesian product locally.
 
-### Niveau 2 - variants explicites
+### Level 2 - explicit variants
 
-Pour les gros sweeps, le client ou le serveur fournit une liste de pipelines
-deja concretises. Chaque variant devient une task, typiquement avec
-`refit=False`. Le serveur selectionne les meilleurs resultats et lance une task
-finale de refit/export du meilleur pipeline.
+For large sweeps, the client or server provides a list of pipelines
+already concretized. Each variant becomes a task, typically with
+`refit=False`. The server selects the best results and launches a task
+final refit/export task for the best pipeline.
 
-Ce niveau doit etre teste contre une execution locale monolithique. Il ne faut
-pas promettre la parite tant que l'aggregation ne reproduit pas les semantics
-exactes de `nirs4all`.
+This level must be tested against monolithic local execution. It is not necessary
+not promise parity as long as the aggregation does not reproduce the semantics
+of `nirs4all`.
 
-### Niveau 3 - folds distribues
+### Level 3 - distributed folds
 
-A differer. Distribuer les folds touche aux garanties anti-leakage, a la
-reconstruction du store et a la selection/refit. A envisager seulement apres le
-couplage avec une couche d'orchestration plus formelle ou apres un spike dedie.
+To be postponed. Distributing folds affects anti-leakage guarantees,
+reconstruction of the blind and the selection/refit. To be considered only after
+coupling with a more formal orchestration layer or after a dedicated spike.
 
-## Specification de job
+## Job specification
 
 Format YAML/JSON cible :
 
@@ -284,35 +283,35 @@ retry:
   max_attempts: 2
 ```
 
-## References d'entree
+## Input References
 
 ### Pipeline
 
-Kinds supportes par ordre de preference :
+Kinds supported in order of preference:
 
-1. `path` : fichier YAML/JSON accessible par le worker.
-2. `artifact` : fichier uploade au serveur puis telecharge par le worker.
+1. `path`: file YAML/JSON accessible by the worker.
+2. `artifact`: file uploaded to the server then downloaded by the worker.
 3. `inline_json` : pipeline serialisable JSON.
-4. `python_entrypoint` : module Python dans un bundle avec
-   `build_pipeline()`. A reserver aux environnements de confiance.
+4. `python_entrypoint`: Python module in a bundle with
+   `build_pipeline()`. Reserved for trusted environments.
 
-Le point 4 est utile pour un proto car beaucoup de pipelines Python contiennent
-des objets sklearn non serialisables en JSON propre. Il est aussi dangereux :
-pas de multi-tenant avec ce mode sans sandbox.
+Point 4 is useful for a proto because many Python pipelines contain
+sklearn objects that cannot be serialized into their own JSON. It is also dangerous:
+no multi-tenant with this mode without sandbox.
 
 ### Dataset
 
-Kinds supportes :
+Supported kinds:
 
-1. `shared_path` : chemin disponible sur tous les workers.
-2. `artifact` : zip uploade, decompresse dans le sandbox de task.
-3. `catalog` : identifiant `nirs4all-datasets` / DOI versionne, resolu par le
-   worker avec cache local.
-4. `worker_local` : dataset present seulement sur des workers labels, utile pour
-   un futur mode federe.
+1. `shared_path`: path available on all workers.
+2. `artifact`: zip uploads, decompresses in the task sandbox.
+3. `catalog`: versioned `nirs4all-datasets` / DOI identifier, resolved by the
+   worker with a local cache.
+4. `worker_local`: dataset present only on worker labels, useful for a future
+   federated mode.
 
-Pour le MVP, `shared_path` est le plus simple et le plus realiste en cluster de
-labo. `artifact` sert aux petits datasets et aux demos.
+For the MVP, `shared_path` is the simplest and most realistic cluster of
+cluster setup. `artifact` is for small datasets and demos.
 
 ## Execution worker
 
@@ -345,23 +344,23 @@ upload_outputs(summary, logs, optional_workspace, model)
 complete_task()
 ```
 
-Par defaut, `inner_n_jobs=1` pour eviter de surconsommer une machine en
-combinant parallelisme local et parallelisme cluster. Un worker peut annoncer
-plusieurs slots si la machine le permet.
+By default, `inner_n_jobs=1` to avoid overconsuming a machine in
+combining local parallelism and cluster parallelism. A worker can announce
+several slots if the machine allows it.
 
 ## API REST
 
 ### Client API
 
-- `POST /v1/jobs` : soumettre un job.
-- `GET /v1/jobs` : lister les jobs.
-- `GET /v1/jobs/{job_id}` : statut et resume.
-- `POST /v1/jobs/{job_id}/cancel` : demander annulation.
-- `GET /v1/jobs/{job_id}/tasks` : details tasks.
-- `GET /v1/jobs/{job_id}/events` : events pagines.
-- `GET /v1/jobs/{job_id}/artifacts` : sorties disponibles.
-- `GET /v1/artifacts/{artifact_id}` : telecharger un artefact.
-- `WS /v1/jobs/{job_id}/events/stream` : progression temps reel.
+- `POST /v1/jobs` : submit a job.
+- `GET /v1/jobs` : list jobs.
+- `GET /v1/jobs/{job_id}`: status and summary.
+- `POST /v1/jobs/{job_id}/cancel` : request cancellation.
+- `GET /v1/jobs/{job_id}/tasks` : task details.
+- `GET /v1/jobs/{job_id}/events` : paginated events.
+- `GET /v1/jobs/{job_id}/artifacts` : available outputs.
+- `GET /v1/artifacts/{artifact_id}` : download an artifact.
+- `WS /v1/jobs/{job_id}/events/stream` : real-time progress.
 
 ### Worker API
 
@@ -378,23 +377,23 @@ plusieurs slots si la machine le permet.
 
 MVP :
 
-- FIFO par priorite ;
+- FIFO by priority;
 - filtrage par labels (`cuda=true`, `site=lab-a`, `python=3.11`) ;
 - slots par worker ;
 - lease timeout ;
-- retry borne ;
+- bounded retries;
 - cancellation cooperative.
 
 Plus tard :
 
-- estimation duree/RAM ;
-- data locality ;
-- quotas par utilisateur/projet ;
-- fairness ;
-- routage GPU ;
+- duration/RAM estimation;
+- data locality;
+- user/project quotas;
+- fairness;
+- GPU routing;
 - preemption.
 
-## Resultats et aggregation
+## Results and aggregation
 
 Chaque task retourne au minimum :
 
@@ -420,42 +419,40 @@ Chaque task retourne au minimum :
 }
 ```
 
-Pour un job compose de plusieurs tasks, le serveur calcule :
+For a job composed of several tasks, the server calculates:
 
-- nombre de tasks reussies/echouees ;
-- meilleur resultat selon la metrique demandee ;
-- table de ranking ;
-- artefact du meilleur modele ;
-- erreurs par task.
+- number of succeeded/failed tasks;
+- best result according to the requested metric;
+- ranking table;
+- artifact of the best model;
+- errors per task.
 
-L'aggregation du workspace complet `nirs4all` n'est pas MVP. Elle est possible
-plus tard via import/export controle du `WorkspaceStore`, mais il faut eviter
-de bricoler du SQLite cross-machine.
+The aggregation of the complete `nirs4all` workspace is not part of the MVP. It may be possible later via controlled import/export of `WorkspaceStore`, but you should avoid cross-machine SQLite tinkering.
 
-## Securite
+## Security
 
-MVP acceptable uniquement pour un LAN de confiance :
+MVP acceptable only for a trusted LAN:
 
-- token statique serveur/worker/client ;
-- CORS ferme par defaut ;
-- pas d'execution de jobs anonymes ;
-- logs sans secrets ;
-- nettoyage de workdir apres retention ;
-- refus par defaut du mode `python_entrypoint` si `--allow-python-jobs` n'est
-  pas active.
+- static server/worker/client token;
+- closed-by-default CORS;
+- no execution of anonymous jobs;
+- logs without secrets;
+- cleaning workdir after retention;
+- default refusal of `python_entrypoint ` mode if `--allow-python-jobs` is not
+  active.
 
 Avant tout usage multi-utilisateur :
 
-- TLS ou mTLS ;
-- identites clients/workers ;
-- rotation des tokens ;
-- sandbox container par task ;
-- quotas CPU/RAM/disk ;
-- politique no-network optionnelle ;
-- allowlist de chemins partages ;
-- chiffrement ou retention stricte des artefacts sensibles.
+- TLS or mTLS;
+- client/worker identities;
+- token rotation;
+- container sandbox per task;
+- CPU/RAM/disk quotas;
+- optional no-network policy;
+- allowlist of shared paths;
+- encryption or strict retention of sensitive artifacts.
 
-## Layout de code propose
+## Proposed code layout
 
 ```text
 nirs4all-cluster/
@@ -488,104 +485,104 @@ nirs4all-cluster/
     job.uploaded-bundle.yaml
 ```
 
-## Plan d'implementation prototype
+## Prototype implementation plan
 
-### Phase 0 - squelette
+### Phase 0 - skeleton
 
 - `pyproject.toml` minimal.
 - CLI `server`, `worker`, `submit`, `status`.
 - Schemas Pydantic.
-- SQLite migrations simples.
-- Tests unitaires des transitions d'etat.
+- simple SQLite migrations.
+- Unit testing of state transitions.
 
-### Phase 1 - queue distribuee minimale
+### Phase 1 - minimal distributed queue
 
-- Serveur FastAPI.
+- FastAPI server.
 - Register/heartbeat workers.
 - Lease FIFO.
-- Execution d'une task factice `echo`.
+- Execution of a dummy task `echo`.
 - Events/logs.
-- Retry sur lease expiree.
+- Retry on expired lease.
 
-### Phase 2 - runner nirs4all atomique
+### Phase 2 - atomic nirs4all runner
 
 - Materialisation `shared_path` et `artifact`.
-- Execution `nirs4all.run()` dans workspace de task.
-- Resume JSON.
+- Execution of `nirs4all.run()` in the task workspace.
+- JSON summary.
 - Export `.n4a`.
-- Upload/download artefacts.
-- Smoke test avec un mini dataset.
+- Upload/download artifacts.
+- Smoke test with a mini dataset.
 
-### Phase 3 - decomposition simple
+### Phase 3 - simple decomposition
 
-- Job `matrix` : pipelines explicites x datasets explicites.
-- Aggregation ranking.
-- Selection meilleur artefact.
-- Comparaison avec execution locale sur un workload petit.
+- Job `matrix`: explicit pipelines x explicit datasets.
+- Ranking aggregation.
+- Best-artifact selection.
+- Comparison with local execution on a small workload.
 
-### Phase 4 - integration Studio/API future
+### Phase 4 - future Studio/API integration
 
-- Adapter REST qui reproduit les concepts `JobManager` de Studio.
+- REST adapter that reproduces the `JobManager` concepts of Studio.
 - WebSocket compatible progression job.
-- Documentation pour remplacer l'execution locale Studio par cluster en opt-in.
+- Documentation to replace local Studio execution with an opt-in cluster.
 
-## Tests de validation
+## Validation tests
 
-Tests obligatoires avant de considerer le proto utile :
+Mandatory tests before considering the prototype useful:
 
-- un worker execute un job atomique et remonte un modele `.n4a` ;
-- deux workers executent deux jobs en parallele ;
-- un worker tue pendant une task provoque un retry ;
-- un job annule n'est pas relance ;
-- un job `pipeline x dataset` agrege les resultats ;
-- le meme job atomique donne des metriques equivalentes a `nirs4all.run()`
+- a worker executes an atomic job and returns a `.n4a` model;
+- two workers execute two jobs in parallel;
+- a worker killed during a task causes a retry;
+- a canceled job is not restarted;
+- a job `pipeline x dataset` aggregates the results;
+- the same atomic job gives metrics equivalent to `nirs4all.run()`
   local ;
-- aucun fichier hors du `state_dir` serveur/worker n'est cree sauf chemins
+- no file outside of `state_dir` serveur/worker is created except paths
   explicitement declares.
 
 Mesures a collecter :
 
-- temps d'attente queue ;
+- queue waiting time;
 - temps de transfert inputs/outputs ;
-- temps d'execution worker ;
+- worker execution time;
 - overhead serveur ;
-- taille artefacts ;
+- artifact size;
 - taux de retry ;
-- difference metrique vs local.
+- metric difference vs local.
 
 ## Decisions pragmatiques
 
-- Commencer par HTTP polling et SQLite, pas Redis/RabbitMQ.
-- Ne pas partager les workspaces `nirs4all` entre workers.
+- Start with HTTP polling and SQLite, not Redis/RabbitMQ.
+- Do not share `nirs4all` workspaces between workers.
 - Utiliser `nirs4all.run()` comme boite noire au depart.
-- Ne pas distribuer les folds dans le premier prototype.
+- Do not distribute the folds in the first prototype.
 - Accepter `python_entrypoint` seulement en mode confiance explicite.
-- Mesurer la parite avant de decomposer automatiquement les variants.
+- Measure parity before automatically decomposing variants.
 
 ## Questions ouvertes
 
-- Quelle representation canonique de pipeline doit devenir le contrat reseau :
-  YAML `nirs4all`, JSON Studio, bundle Python, ou plusieurs formats supportes ?
-- Faut-il garder les workspaces workers complets ou seulement les resumes et
+- What canonical pipeline representation should become the network contract:
+YAML `nirs4all`, JSON Studio, Python bundle, or several formats supported?
+- Should we keep the complete worker workspaces or only the summaries and
   `.n4a` ?
-- Comment importer proprement plusieurs resultats dans un workspace Studio sans
+- How to properly import several results into a Studio workspace without
   toucher `nirs4all` ?
 - Quelle granularite donne le meilleur compromis : run complet, variant, fold ?
-- Quel minimum de securite est requis pour les premiers utilisateurs reels ?
-- Quelle politique de cache dataset adopter sur les workers ?
+- What minimum security is required for real first-time users?
+- What dataset cache policy should be adopted on workers?
 
 ## Recommandation
 
-Pour un prototype rapide dans ce dossier, implementer d'abord :
+For a quick prototype in this folder, implement first:
 
 1. serveur FastAPI + SQLite + object store local ;
 2. worker polling + sandbox de task ;
 3. job atomique `nirs4all.run()` ;
-4. artefacts `.n4a` + resume JSON ;
-5. decomposition explicite `pipelines x datasets`.
+4. `.n4a` artifacts + JSON summary;
+5. explicit decomposition `pipelines x datasets`.
 
-Cette trajectoire valide le modele client/serveur/workers sans forcer de
-changements dans les autres bibliotheques. Si les mesures montrent un vrai gain
-et une parite acceptable, la suite logique est de decider si le backend doit
-rester une queue native ou si l'effort doit migrer vers un backend Dask/Ray plus
+This trajectory validates the client/serveur/workers model without forcing
+changes in other libraries. If the measurements show a real gain
+and an acceptable parity, the logical next step is to decide if the backend must
+remain a native queue or if the effort should migrate to a more Dask/Ray backend
 standard.

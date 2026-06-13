@@ -1,39 +1,32 @@
 # nirs4all-cluster
 
-> **Statut : public alpha / prototype de validation.** Ce dépôt est public pour que
-> l'architecture, les tests et les mesures soient inspectables. Il reste un prototype :
-> son but est de mesurer si une file de jobs distribuée pour `nirs4all.run()` est
-> justifiée, pas de promettre une plateforme cluster prête à exploiter. Voir
-> [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) pour la conception et
-> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md) pour les conditions
-> de passage éventuel en produit.
+> **Status: public alpha / validation prototype.** This repository is public so that
+> architecture, tests, and measurements are inspectable. It is still a prototype:
+> its goal is to measure whether a distributed job queue for`nirs4all.run()`is
+> justified, not to promise a ready-to-use cluster platform. See
+> [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) for the design and
+> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md) for conditions
+> possible passage into product.
 
-Exécution **distribuée** de pipelines `nirs4all` (client / serveur / workers) : un coordinateur
-reçoit des jobs et dispatche le travail à des workers qui pollent le serveur. Le prototype
-**ne modifie aucune autre bibliothèque** de l'écosystème : `nirs4all` est importé uniquement par le
-sous-processus runner, et le serveur/le client fonctionnent sans lui.
+**Distributed** execution of`nirs4all`pipelines (client / server / workers): a coordinator
+receives jobs and dispatches the work to workers that poll the server. The prototype
+**does not modify any other library** in the ecosystem:`nirs4all`is only imported by the
+runner subprocess, and the server/client works without it.
 
-## Ce que le prototype fait
+## What the prototype does
 
-- Soumission d'un job `nirs4all.run()` via SDK Python ou CLI.
-- Serveur FastAPI + file SQLite + object store local adressé par SHA-256.
-- Workers en polling (long-polling HTTP + heartbeat), sandbox de task par dossier.
-- Job atomique (Level 0) et décomposition `pipelines × datasets` (Level 1) avec agrégation/ranking.
-- Téléchargement des artefacts : résumé JSON, logs, meilleur modèle `.n4a`.
-- Reprise après crash worker (lease + retry), annulation coopérative, idempotence.
-- Routage par capacités : labels, mémoire, **versions de paquets (PEP 440)**, **GPU/CUDA** (auto-détecté,
-  `requirements.min_gpu_count` ou label `cuda=true`). Un job `nirs4all.run` exige `nirs4all` par défaut.
+- Submission of a`nirs4all.run()`job via Python SDK or CLI. - FastAPI server + SQLite file + local object store addressed by SHA-256. - Workers polling (long-polling HTTP + heartbeat), with a task sandbox per folder. - Atomic job (Level 0) and`pipelines × datasets`decomposition (Level 1) with aggregation/ranking. - Download artifacts: JSON summary, logs, best`.n4a`model. - Recovery after worker crash (lease + retry), cooperative cancellation, idempotence. - Routing by capabilities: labels, memory, **package versions (PEP 440)**, **GPU/CUDA** (auto-detected,`requirements.min_gpu_count`or`cuda=true`label). A`nirs4all.run`job requires`nirs4all`by default.
 
 ## Installation
 
 ```bash
-# Environnement worker = un environnement nirs4all existant + ce paquet :
+# Worker environment = an existing nirs4all environment + this package:
 uv pip install -e .            # serveur + client + transport worker
-# (les workers fournissent nirs4all eux-mêmes ; il n'est PAS une dépendance dure)
+# (workers provide nirs4all themselves; it is not a hard dependency)
 ```
 
-Python ≥ 3.11. Le serveur et le client n'ont besoin que de FastAPI/uvicorn/httpx/pydantic ; seul le
-worker a besoin d'un environnement `nirs4all` provisionné.
+Python ≥ 3.11. The server and client only need FastAPI/uvicorn/httpx/pydantic; only the
+worker needs a provisioned`nirs4all`environment.
 
 ## Quickstart (LAN de confiance)
 
@@ -41,12 +34,12 @@ worker a besoin d'un environnement `nirs4all` provisionné.
 # 1) serveur
 n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state
 
-# 2) un ou plusieurs workers (sur des machines qui voient nirs4all et le dataset)
-#    Le worker auto-détecte les GPU (nvidia-smi) et déclare le label cuda + gpu_count ;
-#    forcer avec --gpus N (0 pour masquer les GPU).
+# 2) one or more workers (on machines that can see nirs4all and the dataset)
+#    The worker auto-detects GPUs (nvidia-smi) and declares the cuda + gpu_count labels;
+#    force with --gpus N (0 to hide GPUs).
 n4cluster worker --server http://HOST:8765 --labels site=lab --slots 1
 
-# 3) soumettre un job et attendre le résultat
+# 3) submit a job and wait for the result
 n4cluster submit examples/job.shared-path.yaml --wait --out ./results
 n4cluster status   <job_id>
 n4cluster logs     <job_id>
@@ -80,48 +73,39 @@ submitter (SDK/CLI/Studio) ──REST + WS──► serveur (FastAPI + SQLite + 
                                           workers ──► subprocess runner ──► nirs4all.run(workspace=task_ws)
 ```
 
-- **`nirs4all_cluster/server/`** — `app.py` (API), `db.py` (file SQLite, leasing atomique, reaper),
-  `scheduler.py` (machines à états + matching), `artifacts.py` (store SHA-256), `events.py` (broker).
-- **`nirs4all_cluster/worker/`** — `agent.py` (boucle de polling), `materialize.py` (résolution des
-  références → chemins locaux), `executor.py` (sous-processus + capture + annulation).
-- **`nirs4all_cluster/runners/nirs4all_run.py`** — **seul** module qui importe `nirs4all`.
-- **`client.py`** (SDK), **`cli.py`** (`n4cluster`), **`schemas.py`** (contrat Pydantic).
+- **`nirs4all_cluster/server/`** —`app.py`(API),`db.py`(SQLite file, atomic leasing, reaper),`scheduler.py`(state machines + matching),`artifacts.py`(SHA-256 store),`events.py`(broker). - **`nirs4all_cluster/worker/`** —`agent.py`(polling loop),`materialize.py`(resolution of
+  references → local paths),`executor.py`(subprocess + capture + undo). - **`nirs4all_cluster/runners/nirs4all_run.py`** — **only** module that imports`nirs4all`. - **`client.py`** (SDK), **`cli.py`** (`n4cluster`), **`schemas.py`** (Pydantic contract).
 
-## Tests et validation
+## Tests and validation
 
 ```bash
-pytest -q                                   # 45 tests unit/API sans nirs4all + 3 d'intégration
-python scripts/validation.py                # harnais bout-en-bout sur nirs4all-data (8/8)
+pytest -q                                   # 45 unit/API tests without nirs4all + 3 integration tests
+python scripts/validation.py                # end-to-end harness on nirs4all-data (8/8)
 ```
 
-Résultats mesurés sur `nirs4all-data` (voir [`WORKLOG.md`](WORKLOG.md)) : job atomique → `.n4a`,
-2 workers en parallèle, **kill worker → retry**, annulation non relancée, agrégation `pipeline ×
-dataset`, et **parité métrique exacte vs `nirs4all.run()` local (diff = 0.0)** — au-delà du critère
+Results measured on`nirs4all-data`(see [`WORKLOG.md`](WORKLOG.md)): atomic job →`.n4a`,
+2 workers in parallel, **kill worker → retry**, cancellation not restarted,`pipeline ×
+dataset`aggregation, and **exact metric parity vs local`nirs4all.run()`(diff = 0.0)** — beyond the criterion
 go/no-go ≤ 1e-10.
 
-## Critères go/no-go pour passer en produit
+## Go/no-go criteria to upgrade to product
 
-Le go reste conditionnel à **toutes** ces conditions :
+The go remains conditional on **all** of these conditions:
 
-1. ≥ 2 labos / partenaires demandent explicitement l'exécution distribuée. *(non mesurable ici)*
-2. Speedup ≥ 3× sur un workload réel (grid search AOM / HPO sur ≥ 32 datasets). *(à mesurer)*
-3. Résultats metric-identiques (≤ 1e-10) au mono-machine. → **atteint : diff = 0.0** sur le job atomique.
-4. Modèle data + sécurité + reprise écrit **avant** le code. → fait dans `PROTOTYPE_DESIGN.md`.
-5. Sujets de cadrage traités dès le départ (mTLS, secrets, sandboxing tiers, IP/RGPD datasets,
-   environnements lourds TF/Torch/JAX, coût des transferts, idempotence/reprise, quotas/fairness,
-   scheduling hétérogène). → recensés dans `PROTOTYPE_TO_PRODUCTION.md`.
+1. ≥ 2 labs/partners explicitly request distributed execution. *(not measurable here)*
+2. Speedup ≥ 3× on a real workload (grid search AOM / HPO on ≥ 32 datasets). *(to be measured)*
+3. Metric-identical results (≤ 1e-10) with single-machine. → **reached: diff = 0.0** on the atomic job. 4. Data + security + recovery model written **before** the code. → done in`PROTOTYPE_DESIGN.md`. 5. Framing topics covered from the start (mTLS, secrets, third-party sandboxing, IP/GDPR datasets,
+   heavy TF/Torch/JAX environments, transfer costs, idempotence/resumption, quotas/fairness,
+   heterogeneous scheduling). → listed in`PROTOTYPE_TO_PRODUCTION.md`.
 
-Sans ces conditions : **no-go produit** — et l'option par défaut reste un backend Dask opt-in dans
-`nirs4all`, pas une plateforme maison. Le dépôt reste public comme banc de mesure et référence de
-conception, pas comme engagement de roadmap produit.
+Without these conditions: **no-go product** — and the default option remains a Dask opt-in backend in`nirs4all`, not an in-house platform. The deposit remains public as a measuring bench and reference for
+design, not as a product roadmap commitment.
 
 ## Non-objectifs (rappel)
 
-Pas de modification des autres libs, pas de multi-tenant ouvert, pas de sandbox pour code Python
-arbitraire, pas de scheduler type K8s/Ray/Dask, pas d'écriture concurrente dans un workspace
-`nirs4all` partagé, pas de distribution des folds. Voir `PROTOTYPE_DESIGN.md` § Non-objectifs.
+No modification of other libs, no open multi-tenant, no sandbox for Python code
+arbitrary, no K8s/Ray/Dask type scheduler, no concurrent writing in a workspace`nirs4all`shared, no distribution of folds. See`PROTOTYPE_DESIGN.md`§ Non-objectives.
 
-## Références
+## References
 
-`PROTOTYPE_DESIGN.md`, `PROTOTYPE_TO_PRODUCTION.md`, `WORKLOG.md`, et
-`nirs4all-ecosystem/NIRS4ALL-ECOSYSTEM_VISION.md` (annexe *Perspective : exécution distribuée*, risque R13).
+`PROTOTYPE_DESIGN.md`,`PROTOTYPE_TO_PRODUCTION.md`,`WORKLOG.md`, and`nirs4all-ecosystem/NIRS4ALL-ECOSYSTEM_VISION.md`(annex *Perspective: distributed execution*, risk R13).
