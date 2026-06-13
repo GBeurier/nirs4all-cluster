@@ -109,3 +109,10 @@ arbitrary, no K8s/Ray/Dask type scheduler, no concurrent writing in a workspace`
 ## References
 
 `PROTOTYPE_DESIGN.md`,`PROTOTYPE_TO_PRODUCTION.md`,`WORKLOG.md`, and`nirs4all-ecosystem/NIRS4ALL-ECOSYSTEM_VISION.md`(annex *Perspective: distributed execution*, risk R13).
+
+## License
+
+`nirs4all-cluster` is dual-licensed open-source — **`CeCILL-2.1 OR AGPL-3.0-or-later`** (your choice) —
+with an optional **commercial license** for closed-source / SaaS use. For any commercial use, contact
+<nirs4all-admin@cirad.fr>. See [`LICENSING.md`](LICENSING.md), the texts under [`LICENSES/`](LICENSES/),
+and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
