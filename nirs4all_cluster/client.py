@@ -7,6 +7,7 @@ and dicts into the wire schema.
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 import httpx
 
 from .schemas import (
+    ClusterStats,
     DatasetRef,
     EventView,
     JobRequest,
@@ -21,6 +23,18 @@ from .schemas import (
     PipelineRef,
     TaskView,
 )
+from .versioning import (
+    API_VERSION,
+    CLUSTER_VERSION,
+    H_API,
+    H_VERSION,
+    ClusterVersionError,
+    fingerprint_obj,
+    is_divergent,
+    request_headers,
+)
+
+logger = logging.getLogger("nirs4all_cluster.client")
 
 PipelineInput = PipelineRef | dict | str
 DatasetInput = DatasetRef | dict | str
@@ -30,10 +44,17 @@ _TERMINAL = {"succeeded", "failed", "cancelled"}
 
 def _as_pipeline(value: PipelineInput) -> PipelineRef:
     if isinstance(value, PipelineRef):
-        return value
-    if isinstance(value, str):
-        return PipelineRef(kind="path", path=value)
-    return PipelineRef.model_validate(value)
+        ref = value
+    elif isinstance(value, str):
+        ref = PipelineRef(kind="path", path=value)
+    else:
+        ref = PipelineRef.model_validate(value)
+    # Pin a content fingerprint for inline pipelines so the server can trace
+    # whether the worker ran exactly what was submitted (the client cannot read a
+    # worker-side ``path``, so only inline pipelines get one).
+    if ref.kind == "inline_json" and ref.expected_fingerprint is None and ref.inline is not None:
+        ref = ref.model_copy(update={"expected_fingerprint": fingerprint_obj(ref.inline)})
+    return ref
 
 
 def _as_dataset(value: DatasetInput) -> DatasetRef:
@@ -48,8 +69,29 @@ class ClusterClient:
     def __init__(self, base_url: str, *, token: str | None = None, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self._warned_servers: set[str | None] = set()
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        self._http = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
+        headers.update(request_headers("client"))
+        self._http = httpx.Client(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=timeout,
+            event_hooks={"response": [self._on_response]},
+        )
+
+    def _on_response(self, response: httpx.Response) -> None:
+        """httpx hook: warn once on server version drift; raise on protocol incompatibility."""
+        server_version = response.headers.get(H_VERSION)
+        if is_divergent(server_version) and server_version not in self._warned_servers:
+            self._warned_servers.add(server_version)
+            logger.warning(
+                "server runs nirs4all-cluster %s; client runs %s (compatible)", server_version, CLUSTER_VERSION
+            )
+        if response.status_code == 426:
+            raise ClusterVersionError(
+                f"server rejected client as protocol-incompatible "
+                f"(server api={response.headers.get(H_API)}, client api={API_VERSION})"
+            )
 
     def close(self) -> None:
         self._http.close()
@@ -131,10 +173,29 @@ class ClusterClient:
         resp.raise_for_status()
         return JobView.model_validate(resp.json())
 
-    def list_jobs(self, limit: int = 100) -> list[JobView]:
-        resp = self._http.get("/v1/jobs", params={"limit": limit})
+    def list_jobs(
+        self,
+        limit: int = 100,
+        *,
+        status: str | None = None,
+        name: str | None = None,
+        created_before: float | None = None,
+    ) -> list[JobView]:
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if name:
+            params["name"] = name
+        if created_before is not None:
+            params["created_before"] = created_before
+        resp = self._http.get("/v1/jobs", params=params)
         resp.raise_for_status()
         return [JobView.model_validate(j) for j in resp.json()]
+
+    def stats(self) -> ClusterStats:
+        resp = self._http.get("/v1/stats")
+        resp.raise_for_status()
+        return ClusterStats.model_validate(resp.json())
 
     def get_tasks(self, job_id: str) -> list[TaskView]:
         resp = self._http.get(f"/v1/jobs/{job_id}/tasks")

@@ -68,6 +68,11 @@ class PipelineRef(BaseModel):
     # python_entrypoint: a bundle artifact exposing ``build_pipeline()`` in module.
     bundle_artifact_id: str | None = None
     entrypoint: str | None = None  # e.g. "my_pipelines.pls:build_pipeline"
+    # Optional content fingerprint the client computed for this pipeline (inline
+    # only — the client cannot read a worker-side ``path``). The server compares it
+    # against the fingerprint the worker reports and emits a divergence event on
+    # mismatch (traceability; never fatal).
+    expected_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def _check_kind_fields(self) -> PipelineRef:
@@ -264,6 +269,8 @@ class TaskResult(BaseModel):
 
     status: Literal["succeeded"] = "succeeded"
     nirs4all_version: str | None = None
+    # sha256 of the pipeline content the worker actually ran (traceability).
+    pipeline_fingerprint: str | None = None
     duration_seconds: float = 0.0
     metrics: RunMetrics = Field(default_factory=RunMetrics)
     counts: dict[str, int] = Field(default_factory=dict)
@@ -340,3 +347,14 @@ class ArtifactView(BaseModel):
     size_bytes: int
     created_at: float
     filename: str | None = None
+
+
+class ClusterStats(BaseModel):
+    """Server-wide counters for the dashboard header and ``n4cluster`` tooling."""
+
+    server_version: str
+    api_version: int
+    jobs_by_status: dict[str, int] = Field(default_factory=dict)
+    workers_alive: int = 0
+    workers_dead: int = 0
+    tasks_in_flight: int = 0

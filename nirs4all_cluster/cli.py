@@ -6,10 +6,13 @@ Subcommands:
     n4cluster worker   --server URL [--token ${N4CLUSTER_TOKEN} [--labels k=v,...] [--slots N] [--allow-python]
     n4cluster submit   job.yaml [--server URL] [--token ${N4CLUSTER_TOKEN} [--wait] [--out DIR]
     n4cluster status   JOB_ID
+    n4cluster jobs     [--status S] [--name N] [--limit L]
     n4cluster logs     JOB_ID
     n4cluster cancel   JOB_ID
     n4cluster artifacts JOB_ID --out ./results
     n4cluster workers
+
+The server also serves a live ops dashboard at ``/ui``.
 """
 
 from __future__ import annotations
@@ -50,28 +53,42 @@ def _client(args: argparse.Namespace) -> ClusterClient:
 # --------------------------------------------------------------------------- #
 
 
+def _csv_list(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for value in values or []:
+        out.extend(p.strip() for p in value.split(",") if p.strip())
+    return out
+
+
 def cmd_server(args: argparse.Namespace) -> int:
     import uvicorn
 
+    from .logging_setup import configure_logging
     from .server.app import ServerConfig, create_app
 
+    configure_logging(args.log_level, args.log_file)
     token = args.token or os.environ.get("N4CLUSTER_TOKEN")
     config = ServerConfig(
         state_dir=args.state,
         token=token,
         allow_python_jobs=args.allow_python_jobs,
         lease_ttl_s=args.lease_ttl,
+        cors_origins=_csv_list(args.cors_origin),
     )
     app = create_app(config)
     print(f"[n4cluster] server on http://{args.host}:{args.port}  state={args.state}  "
           f"auth={'on' if token else 'off'}  python_jobs={'on' if args.allow_python_jobs else 'off'}")
+    print(f"[n4cluster] dashboard: http://{args.host}:{args.port}/ui")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
 
 def cmd_worker(args: argparse.Namespace) -> int:
+    from .logging_setup import configure_logging
+    from .versioning import ClusterVersionError
     from .worker.agent import WorkerAgent
 
+    configure_logging(args.log_level, args.log_file)
     server = args.server or os.environ.get("N4CLUSTER_SERVER", "http://127.0.0.1:8765")
     token = args.token or os.environ.get("N4CLUSTER_TOKEN")
     capabilities: dict[str, Any] = {}
@@ -89,7 +106,11 @@ def cmd_worker(args: argparse.Namespace) -> int:
         poll_interval=args.poll_interval,
         gpu_count=args.gpus,
     )
-    worker_id = agent.register()
+    try:
+        worker_id = agent.register()
+    except ClusterVersionError as exc:
+        print(f"[n4cluster] cannot register: {exc}")
+        return 2
     print(f"[n4cluster] worker {worker_id} registered to {server}  slots={args.slots}  "
           f"labels={agent.labels}  (Ctrl-C to stop)")
     try:
@@ -165,11 +186,26 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    with _client(args) as client:
+        jobs = client.list_jobs(limit=args.limit, status=args.status, name=args.name)
+        if not jobs:
+            print("(no jobs)")
+        for j in jobs:
+            a = j.aggregate
+            best = "" if a.best_metric is None else f"best={a.best_metric}"
+            print(f"{j.id}  {j.status.value:<10}  {a.num_succeeded}/{a.num_tasks} ok  "
+                  f"{a.num_failed} failed  {best}  {j.name or ''}".rstrip())
+    return 0
+
+
 def cmd_workers(args: argparse.Namespace) -> int:
     with _client(args) as client:
         for w in client.list_workers():
+            diverge = "  !version" if w.get("version_divergent") else ""
+            ver = w.get("cluster_version") or "?"
             print(f"{w['id']}  {w['status']:<5}  slots={w['slots_used']}/{w['slots_total']}  "
-                  f"labels={w['labels']}  name={w.get('name')}")
+                  f"labels={w['labels']}  v={ver}{diverge}  name={w.get('name')}")
     return 0
 
 
@@ -205,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_server.add_argument("--allow-python-jobs", action="store_true")
     p_server.add_argument("--lease-ttl", type=float, default=60.0)
     p_server.add_argument("--log-level", default="info")
+    p_server.add_argument("--log-file", default=None, help="also write logs to this file")
+    p_server.add_argument(
+        "--cors-origin",
+        action="append",
+        help="allow this browser origin to call the API (repeatable; off by default)",
+    )
     p_server.set_defaults(func=cmd_server)
 
     p_worker = sub.add_parser("worker", help="run a worker that polls the server")
@@ -223,6 +265,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_worker.add_argument("--allow-python", action="store_true", help="permit python_entrypoint pipelines")
     p_worker.add_argument("--name", default=None)
     p_worker.add_argument("--poll-interval", type=float, default=2.0)
+    p_worker.add_argument("--log-level", default="info")
+    p_worker.add_argument("--log-file", default=None, help="also write logs to this file")
     p_worker.set_defaults(func=cmd_worker)
 
     p_submit = sub.add_parser("submit", help="submit a job YAML/JSON")
@@ -254,6 +298,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_art.add_argument("--out", help="download artifacts to this directory")
     add_conn(p_art)
     p_art.set_defaults(func=cmd_artifacts)
+
+    p_jobs = sub.add_parser("jobs", help="list jobs (filter by status/name)")
+    p_jobs.add_argument("--status", help="filter by status (queued/running/succeeded/failed/...)")
+    p_jobs.add_argument("--name", help="filter by name substring")
+    p_jobs.add_argument("--limit", type=int, default=50)
+    add_conn(p_jobs)
+    p_jobs.set_defaults(func=cmd_jobs)
 
     p_workers = sub.add_parser("workers", help="list registered workers")
     add_conn(p_workers)

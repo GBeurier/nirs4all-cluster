@@ -11,6 +11,7 @@ The agent never imports nirs4all — only the runner subprocess does.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -22,8 +23,19 @@ from typing import Any
 import httpx
 
 from ..schemas import RunMetrics, TaskFailure, TaskPayload, TaskResult, WorkerRegister
+from ..versioning import (
+    API_VERSION,
+    CLUSTER_VERSION,
+    H_API,
+    H_VERSION,
+    ClusterVersionError,
+    is_divergent,
+    request_headers,
+)
 from .executor import execute_task
 from .materialize import build_runner_spec
+
+logger = logging.getLogger("nirs4all_cluster.worker")
 
 
 class WorkerAgent:
@@ -42,8 +54,15 @@ class WorkerAgent:
         python_exe: str | None = None,
         gpu_count: int | None = None,
     ):
+        self._warned_servers: set[str | None] = set()
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        self._http = httpx.Client(base_url=server.rstrip("/"), headers=headers, timeout=120.0)
+        headers.update(request_headers("worker"))
+        self._http = httpx.Client(
+            base_url=server.rstrip("/"),
+            headers=headers,
+            timeout=120.0,
+            event_hooks={"response": [self._on_response]},
+        )
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.labels = labels or {}
@@ -88,6 +107,20 @@ class WorkerAgent:
             self.capabilities.setdefault("cuda_version", gpu["cuda_version"])
         self.labels.setdefault("cuda", "true" if gpu["cuda"] else "false")
 
+    def _on_response(self, response: httpx.Response) -> None:
+        """httpx hook: note server version drift; raise on protocol incompatibility."""
+        server_version = response.headers.get(H_VERSION)
+        if is_divergent(server_version) and server_version not in self._warned_servers:
+            self._warned_servers.add(server_version)
+            logger.warning(
+                "server runs nirs4all-cluster %s; worker runs %s (compatible)", server_version, CLUSTER_VERSION
+            )
+        if response.status_code == 426:
+            raise ClusterVersionError(
+                f"server rejected worker as protocol-incompatible "
+                f"(server api={response.headers.get(H_API)}, worker api={API_VERSION})"
+            )
+
     # ------------------------------------------------------------------ #
     # Public lifecycle
     # ------------------------------------------------------------------ #
@@ -128,6 +161,7 @@ class WorkerAgent:
         data = resp.json()
         self.worker_id = data["worker_id"]
         self._heartbeat_interval = data.get("heartbeat_interval_s", 10.0)
+        logger.info("registered as %s (slots=%s, labels=%s)", self.worker_id, self.slots, self.labels)
         return self.worker_id
 
     # ------------------------------------------------------------------ #
@@ -141,7 +175,7 @@ class WorkerAgent:
                     ids = resp.json().get("cancel_task_ids", [])
                     with self._cancel_lock:
                         self._cancel_requested.update(ids)
-            except httpx.HTTPError:
+            except (httpx.HTTPError, ClusterVersionError):
                 pass
             self._stop.wait(self._heartbeat_interval)
 
@@ -165,7 +199,7 @@ class WorkerAgent:
             resp.raise_for_status()
             payload = resp.json().get("task")
             return TaskPayload.model_validate(payload) if payload else None
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ClusterVersionError):
             return None
 
     # ------------------------------------------------------------------ #
@@ -197,7 +231,7 @@ class WorkerAgent:
             if exec_result.cancelled or status == "cancelled":
                 self._report_fail(task, "task cancelled", retriable=False)
             elif status == "succeeded":
-                self._report_success(task, exec_result)
+                self._report_success(task, exec_result, spec.get("pipeline_fingerprint"))
             else:
                 error = exec_result.result.get("error", "unknown runner failure")
                 self._upload_log(task, exec_result.log_path)
@@ -210,7 +244,7 @@ class WorkerAgent:
             self._cleanup(task, workdir)
             self._dec_active()
 
-    def _report_success(self, task: TaskPayload, exec_result: Any) -> None:
+    def _report_success(self, task: TaskPayload, exec_result: Any, pipeline_fingerprint: str | None) -> None:
         summary = exec_result.result
         artifacts: dict[str, str | None] = {"model": None, "logs": None, "workspace": None}
 
@@ -225,12 +259,14 @@ class WorkerAgent:
         result = TaskResult(
             status="succeeded",
             nirs4all_version=summary.get("nirs4all_version"),
+            pipeline_fingerprint=pipeline_fingerprint,
             duration_seconds=float(summary.get("duration_seconds", 0.0) or 0.0),
             metrics=RunMetrics(**(summary.get("metrics") or {})),
             counts=summary.get("counts", {}),
             artifacts=artifacts,
             extra=summary.get("extra", {}),
         )
+        logger.info("task %s succeeded (%.1fs)", task.task_id, result.duration_seconds)
         self._http.post(
             f"/v1/tasks/{task.task_id}/complete",
             params={"worker_id": self.worker_id},
@@ -238,6 +274,7 @@ class WorkerAgent:
         )
 
     def _report_fail(self, task: TaskPayload, error: str, *, retriable: bool) -> None:
+        logger.warning("task %s failed (retriable=%s): %s", task.task_id, retriable, error.splitlines()[0] if error else "")
         failure = TaskFailure(error=error[:4000], retriable=retriable)
         try:
             self._http.post(
@@ -398,5 +435,7 @@ def _environment_version() -> dict[str, Any]:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "executable": sys.executable,
+        "nirs4all_cluster": CLUSTER_VERSION,
+        "api_version": API_VERSION,
         "packages": packages,
     }

@@ -8,8 +8,10 @@ import zipfile
 
 import pytest
 
+from nirs4all_cluster.schemas import TaskPayload
+from nirs4all_cluster.versioning import fingerprint_file, fingerprint_obj
 from nirs4all_cluster.worker.agent import WorkerAgent, _detect_gpu
-from nirs4all_cluster.worker.materialize import _safe_extract
+from nirs4all_cluster.worker.materialize import _safe_extract, build_runner_spec
 
 
 def test_detect_gpu_stable_shape():
@@ -70,3 +72,31 @@ def test_safe_extract_ok(tmp_path):
     dest = tmp_path / "out"
     _safe_extract(archive, dest)
     assert (dest / "a" / "b.txt").read_bytes() == b"hello"
+
+
+def _payload(pipeline, dataset_dir):
+    return TaskPayload(
+        task_id="t1",
+        job_id="j1",
+        type="nirs4all.run",
+        attempt=1,
+        pipeline=pipeline,
+        dataset={"kind": "shared_path", "path": str(dataset_dir)},
+        lease_expires_at=0.0,
+    )
+
+
+def test_build_runner_spec_fingerprints_inline(tmp_path):
+    inline = {"steps": [{"class": "PLS", "n": 5}]}
+    task = _payload({"kind": "inline_json", "inline": inline}, tmp_path)
+    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest)
+    # The worker's inline fingerprint matches the client's hash of the same dict.
+    assert spec["pipeline_fingerprint"] == fingerprint_obj(inline)
+
+
+def test_build_runner_spec_fingerprints_path(tmp_path):
+    pipeline_file = tmp_path / "p.yaml"
+    pipeline_file.write_text("steps: [a, b]\n", encoding="utf-8")
+    task = _payload({"kind": "path", "path": str(pipeline_file)}, tmp_path)
+    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest)
+    assert spec["pipeline_fingerprint"] == fingerprint_file(pipeline_file)

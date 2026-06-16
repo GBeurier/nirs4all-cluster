@@ -7,22 +7,24 @@
 
 # nirs4all-cluster
 
-> **Status: public alpha / validation prototype.** This repository is public so that
-> architecture, tests, and measurements are inspectable. It is still a prototype:
-> its goal is to measure whether a distributed job queue for`nirs4all.run()`is
-> justified, not to promise a ready-to-use cluster platform. See
-> [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) for the design and
-> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md) for conditions
-> possible passage into product.
+> **Status: beta · trusted-LAN.** A small distributed job queue for `nirs4all.run()`,
+> built for a **trusted local network** — not the open internet or untrusted multi-tenant
+> use. The documented non-goals and security posture still hold (a single static token, no
+> sandbox, a single SQLite server). See [`SECURITY.md`](SECURITY.md),
+> [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) (the design source of truth) and
+> [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md). The broader question of a
+> native cluster vs. an opt-in Dask backend in `nirs4all` remains open.
+>
+> 📖 **Docs:** <https://nirs4all-cluster.readthedocs.io> · 🖥️ **Dashboard:** `http://HOST:8765/ui`
 
 **Distributed** execution of`nirs4all`pipelines (client / server / workers): a coordinator
 receives jobs and dispatches the work to workers that poll the server. The prototype
 **does not modify any other library** in the ecosystem:`nirs4all`is only imported by the
 runner subprocess, and the server/client works without it.
 
-## What the prototype does
+## What it does
 
-- Submission of a`nirs4all.run()`job via Python SDK or CLI. - FastAPI server + SQLite file + local object store addressed by SHA-256. - Workers polling (long-polling HTTP + heartbeat), with a task sandbox per folder. - Atomic job (Level 0) and`pipelines × datasets`decomposition (Level 1) with aggregation/ranking. - Download artifacts: JSON summary, logs, best`.n4a`model. - Recovery after worker crash (lease + retry), cooperative cancellation, idempotence. - Routing by capabilities: labels, memory, **package versions (PEP 440)**, **GPU/CUDA** (auto-detected,`requirements.min_gpu_count`or`cuda=true`label). A`nirs4all.run`job requires`nirs4all`by default.
+- Submission of a`nirs4all.run()`job via Python SDK or CLI. - FastAPI server + SQLite file + local object store addressed by SHA-256. - Workers polling (long-polling HTTP + heartbeat), with a task sandbox per folder. - Atomic job (Level 0) and`pipelines × datasets`decomposition (Level 1) with aggregation/ranking. - Download artifacts: JSON summary, logs, best`.n4a`model. - Recovery after worker crash (lease + retry), cooperative cancellation, idempotence. - Routing by capabilities: labels, memory, **package versions (PEP 440)**, **GPU/CUDA** (auto-detected,`requirements.min_gpu_count`or`cuda=true`label). A`nirs4all.run`job requires`nirs4all`by default. - **Live web dashboard** at `/ui` (jobs, workers, events; cancel) over a global WebSocket stream. - **Version compatibility tracking**: client/server/worker advertise their `nirs4all-cluster` + protocol version; incompatible protocol majors are rejected, compatible drift is logged/traced. **Pipeline content fingerprints** recorded end-to-end. - **Richer job listing/filtering** (`n4cluster jobs --status … --name …`, `GET /v1/stats`) and **structured logging** (`--log-level`, `--log-file`).
 
 ## Installation
 
@@ -49,9 +51,13 @@ n4cluster worker --server http://HOST:8765 --labels site=lab --slots 1
 # 3) submit a job and wait for the result
 n4cluster submit examples/job.shared-path.yaml --wait --out ./results
 n4cluster status   <job_id>
+n4cluster jobs     --status running        # filter the job list
 n4cluster logs     <job_id>
 n4cluster cancel   <job_id>
 n4cluster artifacts <job_id> --out ./results
+
+# 4) watch everything live in the browser
+#    open http://HOST:8765/ui
 ```
 
 SDK Python :
@@ -105,8 +111,11 @@ The go remains conditional on **all** of these conditions:
    heavy TF/Torch/JAX environments, transfer costs, idempotence/resumption, quotas/fairness,
    heterogeneous scheduling). → listed in`PROTOTYPE_TO_PRODUCTION.md`.
 
-Without these conditions: **no-go product** — and the default option remains a Dask opt-in backend in`nirs4all`, not an in-house platform. The deposit remains public as a measuring bench and reference for
-design, not as a product roadmap commitment.
+These criteria gate a full **production** commitment (mTLS, sandboxing, Postgres, network
+object storage — see [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md)). Until they
+are met, the ecosystem's default option remains an opt-in Dask backend in `nirs4all`; this
+repository is published as a usable **trusted-LAN beta** and an auditable reference for the
+design, not as a production roadmap commitment.
 
 ## Non-objectifs (rappel)
 

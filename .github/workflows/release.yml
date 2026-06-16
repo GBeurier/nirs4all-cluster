@@ -1,0 +1,52 @@
+name: Release
+
+# Publishes to PyPI when a GitHub Release is published.
+#
+# Uses PyPI Trusted Publishing (OIDC) — no API token/secret. Configure a trusted
+# publisher on PyPI (https://pypi.org/manage/account/publishing/) with:
+#   Project:     nirs4all-cluster
+#   Owner:       GBeurier
+#   Repository:  nirs4all-cluster
+#   Workflow:    release.yml
+#   Environment: pypi
+# Then publish a GitHub Release (tag e.g. v0.1.0) to trigger this workflow.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Twine check (strict metadata)
+        run: uvx twine check --strict dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish-pypi:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nirs4all-cluster
+    permissions:
+      id-token: write          # REQUIRED for OIDC Trusted Publishing
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1

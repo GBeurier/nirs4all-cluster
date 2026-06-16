@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>nirs4all-cluster · dashboard</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --border: #2a313c; --fg: #e6edf3;
+    --muted: #8b949e; --accent: #2f81f7; --ok: #2ea043; --warn: #d29922;
+    --err: #f85149; --run: #2f81f7; --chip: #21262d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .ver { color: var(--muted); font-size: 12px; }
+  header .grow { flex: 1; }
+  input, select, button { background: var(--chip); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font: inherit; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #conn { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); }
+  #conn.up { color: var(--ok); } #conn.down { color: var(--err); }
+  main { padding: 18px 20px; display: grid; gap: 18px; max-width: 1200px; margin: 0 auto; }
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; min-width: 96px; }
+  .stat b { display: block; font-size: 22px; }
+  .stat span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  section > h2 { margin: 0; font-size: 13px; font-weight: 600; padding: 10px 14px;
+    border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: center; }
+  section > h2 .grow { flex: 1; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  tr:last-child td { border-bottom: none; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); white-space: nowrap; }
+  .b-queued { color: var(--muted); } .b-running, .b-cancelling { color: var(--run); }
+  .b-succeeded { color: var(--ok); } .b-failed, .b-lost { color: var(--err); }
+  .b-cancelled { color: var(--warn); } .b-alive { color: var(--ok); } .b-dead { color: var(--err); }
+  .b-diverge { color: var(--warn); border-color: var(--warn); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .jobrow { cursor: pointer; } .jobrow:hover { background: #1b2230; }
+  .detail td { background: #0c0f14; }
+  .detail h4 { margin: 6px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; }
+  .log { max-height: 220px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+  .log div { padding: 1px 0; white-space: pre-wrap; }
+  .log .warning { color: var(--warn); } .log .error { color: var(--err); }
+  .rank td { padding: 4px 14px; }
+  a.cancel { color: var(--err); border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 8px; font-size: 12px; text-decoration: none; }
+  a.cancel:hover { border-color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>nirs4all-cluster</h1>
+  <span class="ver" id="ver"></span>
+  <span class="grow"></span>
+  <input id="token" type="password" placeholder="token (if any)" size="14" />
+  <span id="conn" class="down">offline</span>
+</header>
+<main>
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h2>Jobs
+      <span class="grow"></span>
+      <input id="fname" placeholder="filter name…" size="14" />
+      <select id="fstatus">
+        <option value="">all status</option>
+        <option>queued</option><option>running</option><option>succeeded</option>
+        <option>failed</option><option>cancelling</option><option>cancelled</option>
+      </select>
+      <button id="refresh">Refresh</button>
+    </h2>
+    <table>
+      <thead><tr><th>Job</th><th>Status</th><th>Tasks</th><th>Best</th><th>Created</th><th></th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Workers</h2>
+    <table>
+      <thead><tr><th>Worker</th><th>Status</th><th>Slots</th><th>Labels</th><th>Version</th></tr></thead>
+      <tbody id="workers"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Live events</h2>
+    <div class="log" id="events"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const tokenInput = $("token");
+tokenInput.value = localStorage.getItem("n4c_token") || "";
+tokenInput.addEventListener("change", () => {
+  localStorage.setItem("n4c_token", tokenInput.value.trim());
+  connect(); refreshAll();
+});
+
+const tok = () => tokenInput.value.trim();
+const hdrs = () => tok() ? { Authorization: "Bearer " + tok() } : {};
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const badge = (s) => `<span class="badge b-${esc(s)}">${esc(s)}</span>`;
+const when = (t) => t ? new Date(t * 1000).toLocaleString() : "";
+
+async function api(path) {
+  const r = await fetch(path, { headers: hdrs() });
+  if (r.status === 401) throw new Error("401 — set a token");
+  if (!r.ok) throw new Error(r.status + " " + path);
+  return r.json();
+}
+
+const expanded = new Set();
+
+async function refreshStats() {
+  try {
+    const s = await api("/v1/stats");
+    $("ver").textContent = `v${s.server_version} · api v${s.api_version}`;
+    const j = s.jobs_by_status || {};
+    const cell = (label, val) => `<div class="stat"><b>${val}</b><span>${label}</span></div>`;
+    $("stats").innerHTML =
+      cell("running", j.running || 0) + cell("queued", j.queued || 0) +
+      cell("succeeded", j.succeeded || 0) + cell("failed", j.failed || 0) +
+      cell("tasks in flight", s.tasks_in_flight || 0) +
+      cell("workers", `${s.workers_alive}<span class="muted" style="font-size:13px">/${s.workers_alive + s.workers_dead}</span>`);
+  } catch (e) { $("stats").innerHTML = `<div class="stat"><b>—</b><span>${esc(e.message)}</span></div>`; }
+}
+
+async function refreshJobs() {
+  const params = new URLSearchParams({ limit: "100" });
+  if ($("fstatus").value) params.set("status", $("fstatus").value);
+  if ($("fname").value.trim()) params.set("name", $("fname").value.trim());
+  let jobs = [];
+  try { jobs = await api("/v1/jobs?" + params); } catch (e) { return; }
+  const tb = $("jobs");
+  tb.innerHTML = "";
+  for (const j of jobs) {
+    const a = j.aggregate || {};
+    const tasks = `${a.num_succeeded || 0}✓ ${a.num_failed || 0}✗ ${a.num_running || 0}▶ ${a.num_queued || 0}…`;
+    const tr = document.createElement("tr");
+    tr.className = "jobrow";
+    tr.innerHTML =
+      `<td><span class="mono">${esc(j.id)}</span><br><span class="muted">${esc(j.name || "")}</span></td>` +
+      `<td>${badge(j.status)}</td><td class="mono">${tasks}</td>` +
+      `<td class="mono">${a.best_metric ?? ""}</td><td class="muted">${when(j.created_at)}</td>` +
+      `<td>${["succeeded","failed","cancelled"].includes(j.status) ? "" :
+        `<a class="cancel" data-cancel="${esc(j.id)}">cancel</a>`}</td>`;
+    tr.addEventListener("click", (ev) => {
+      if (ev.target.dataset.cancel) return;
+      if (expanded.has(j.id)) expanded.delete(j.id); else expanded.add(j.id);
+      refreshJobs();
+    });
+    tb.appendChild(tr);
+    if (expanded.has(j.id)) tb.appendChild(detailRow(j));
+  }
+  tb.querySelectorAll("[data-cancel]").forEach(el =>
+    el.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      await fetch(`/v1/jobs/${el.dataset.cancel}/cancel`, { method: "POST", headers: hdrs() });
+      refreshAll();
+    }));
+}
+
+function detailRow(j) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = 6;
+  td.innerHTML = `<div id="d-${j.id}"><span class="muted">loading…</span></div>`;
+  tr.appendChild(td);
+  loadDetail(j);
+  return tr;
+}
+
+async function loadDetail(j) {
+  const host = () => $("d-" + j.id);
+  if (!host()) return;
+  let ranking = (j.aggregate && j.aggregate.ranking) || [];
+  let html = "";
+  if (ranking.length) {
+    html += "<h4>Ranking</h4><table><tbody>";
+    ranking.slice(0, 10).forEach((r, i) => {
+      html += `<tr class="rank"><td class="mono">${i + 1}.</td><td>${esc(r.pipeline)} × ${esc(r.dataset)}</td>` +
+        `<td class="mono">${esc(JSON.stringify(r.metrics || {}))}</td></tr>`;
+    });
+    html += "</tbody></table>";
+  }
+  try {
+    const evs = await api(`/v1/jobs/${j.id}/events?limit=50`);
+    html += "<h4>Recent events</h4><div class='log'>";
+    evs.slice(-30).forEach(e => {
+      html += `<div class="${esc(e.level)}">${when(e.ts)}  ${esc(e.type)}  ${esc(e.message)}</div>`;
+    });
+    html += "</div>";
+  } catch (e) {}
+  if (host()) host().innerHTML = html || "<span class='muted'>no detail</span>";
+}
+
+async function refreshWorkers() {
+  let ws = [];
+  try { ws = await api("/v1/workers"); } catch (e) { return; }
+  const tb = $("workers");
+  tb.innerHTML = "";
+  for (const w of ws) {
+    const labels = Object.entries(w.labels || {}).map(([k, v]) => `${k}=${v}`).join(" ");
+    const ver = w.cluster_version
+      ? `<span class="mono">${esc(w.cluster_version)}</span>` +
+        (w.version_divergent ? ` <span class="badge b-diverge">divergent</span>` : "")
+      : `<span class="muted">—</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><span class="mono">${esc(w.id)}</span><br><span class="muted">${esc(w.name || "")}</span></td>` +
+      `<td>${badge(w.status)}</td><td class="mono">${w.slots_used}/${w.slots_total}</td>` +
+      `<td class="muted">${esc(labels)}</td><td>${ver}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+let refreshTimer = null;
+function refreshAll() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => { refreshStats(); refreshJobs(); refreshWorkers(); }, 80);
+}
+
+const evLog = $("events");
+function pushEvent(e) {
+  const div = document.createElement("div");
+  div.className = e.level || "info";
+  div.textContent = `${when(e.ts)}  ${e.type}  ${e.message}`;
+  evLog.appendChild(div);
+  while (evLog.childNodes.length > 300) evLog.removeChild(evLog.firstChild);
+  evLog.scrollTop = evLog.scrollHeight;
+}
+
+let ws = null;
+function connect() {
+  if (ws) { try { ws.close(); } catch (e) {} }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = tok() ? "?token=" + encodeURIComponent(tok()) : "";
+  ws = new WebSocket(`${proto}://${location.host}/v1/events/stream${q}`);
+  ws.onopen = () => { $("conn").textContent = "live"; $("conn").className = "up"; };
+  ws.onclose = () => { $("conn").textContent = "offline"; $("conn").className = "down"; setTimeout(connect, 3000); };
+  ws.onmessage = (m) => { const e = JSON.parse(m.data); pushEvent(e); refreshAll(); };
+}
+
+$("refresh").addEventListener("click", refreshAll);
+$("fstatus").addEventListener("change", refreshJobs);
+$("fname").addEventListener("input", () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshJobs, 250); });
+
+connect();
+refreshAll();
+setInterval(refreshAll, 10000);
+</script>
+</body>
+</html>

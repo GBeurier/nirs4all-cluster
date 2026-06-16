@@ -84,6 +84,77 @@ def test_health(client):
     assert client.get("/").json()["ok"] is True
 
 
+def test_healthz_and_version(client):
+    assert client.get("/healthz").json() == {"ok": True}
+    v = client.get("/version").json()
+    assert v["service"] == "nirs4all-cluster"
+    assert v["api_version"] >= 1
+    assert client.get("/").json()["version"] == v["version"]
+
+
+def test_dashboard_served(client):
+    r = client.get("/ui")
+    assert r.status_code == 200
+    assert "nirs4all-cluster" in r.text
+
+
+def test_stats_counts(client):
+    client.post("/v1/jobs", json=_atomic_job()).raise_for_status()
+    _register(client)
+    s = client.get("/v1/stats").json()
+    assert s["jobs_by_status"].get("queued") == 1
+    assert s["workers_alive"] == 1
+    assert s["api_version"] >= 1
+
+
+def test_jobs_filter_by_status_and_name(client):
+    client.post("/v1/jobs", json=_atomic_job()).raise_for_status()  # name="demo"
+    other = _atomic_job()
+    other["name"] = "other"
+    client.post("/v1/jobs", json=other).raise_for_status()
+
+    assert len(client.get("/v1/jobs", params={"status": "queued"}).json()) == 2
+    assert client.get("/v1/jobs", params={"status": "succeeded"}).json() == []
+    named = client.get("/v1/jobs", params={"name": "other"}).json()
+    assert len(named) == 1 and named[0]["name"] == "other"
+
+
+def test_workers_view_exposes_version_and_divergence(client):
+    _register(client, version={"packages": {"nirs4all": "0.9.1"}, "nirs4all_cluster": "9.9.9"})
+    w = client.get("/v1/workers").json()[0]
+    assert w["cluster_version"] == "9.9.9"
+    assert w["version_divergent"] is True  # 9.9.9 != the server's own version
+    assert "capabilities" in w
+
+
+def test_global_event_stream(client):
+    with client.websocket_connect("/v1/events/stream") as ws:
+        job = client.post("/v1/jobs", json=_atomic_job()).json()
+        seen = False
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "job_submitted" and msg.get("job_id") == job["id"]:
+                seen = True
+                break
+        assert seen
+
+
+def test_large_json_request_rejected(tmp_path):
+    config = ServerConfig(state_dir=str(tmp_path / "state"), max_request_mb=0)  # 0 MB cap
+    with TestClient(create_app(config)) as c:
+        r = c.post("/v1/jobs", json=_atomic_job())
+        assert r.status_code == 413
+        # Even the early rejection advertises the server's protocol version.
+        assert r.headers["X-N4C-Version"] and r.headers["X-N4C-Api"]
+
+
+def test_cors_header_when_enabled(tmp_path):
+    config = ServerConfig(state_dir=str(tmp_path / "state"), cors_origins=["http://example.com"])
+    with TestClient(create_app(config)) as c:
+        r = c.get("/v1/jobs", headers={"Origin": "http://example.com"})
+        assert r.headers.get("access-control-allow-origin") == "http://example.com"
+
+
 def test_atomic_job_full_lifecycle(client):
     job = client.post("/v1/jobs", json=_atomic_job()).json()
     assert job["status"] == "queued"

@@ -9,6 +9,7 @@ child), and a clean nirs4all-free import graph for the agent itself.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -16,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("nirs4all_cluster.worker.executor")
 
 
 @dataclass
@@ -73,6 +76,7 @@ def execute_task(
         # worker happened to be launched from a directory that contains a
         # `nirs4all/` source tree.
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(workdir))
+        logger.info("runner started (pid=%s) in %s", proc.pid, workdir)
         while True:
             ret = proc.poll()
             if ret is not None:
@@ -80,9 +84,11 @@ def execute_task(
             now = time.time()
             if cancel_check():
                 cancelled = True
+                logger.info("cancelling runner (pid=%s)", proc.pid)
                 _terminate(proc)
                 break
             if timeout is not None and (now - start) > timeout:
+                logger.warning("runner timed out after %.0fs (pid=%s)", now - start, proc.pid)
                 _terminate(proc)
                 break
             if now - last_tick >= tick_every:
@@ -91,6 +97,7 @@ def execute_task(
             time.sleep(poll_interval)
 
     returncode = proc.returncode if proc.returncode is not None else -1
+    logger.info("runner exited rc=%s cancelled=%s", returncode, cancelled)
     result: dict[str, Any] = {}
     if result_file.exists():
         try:

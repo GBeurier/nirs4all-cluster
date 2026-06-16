@@ -11,17 +11,21 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 import math
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 
+from .. import __version__
 from ..schemas import (
     ArtifactView,
+    ClusterStats,
     EventView,
     HeartbeatAck,
     JobAggregate,
@@ -37,10 +41,25 @@ from ..schemas import (
     WorkerRegister,
     WorkerRegistered,
 )
+from ..versioning import (
+    API_VERSION,
+    CLUSTER_VERSION,
+    H_API,
+    H_ROLE,
+    H_VERSION,
+    is_divergent,
+    is_incompatible,
+    parse_api,
+)
 from .artifacts import ArtifactStore, ArtifactTooLarge
 from .db import Database
 from .events import EventBroker
 from .scheduler import IllegalTransition, aggregate_metric_better
+
+logger = logging.getLogger("nirs4all_cluster.server")
+
+# Static assets for the built-in /ui dashboard.
+_STATIC_DIR = Path(__file__).parent / "static"
 
 # Task states considered terminal for job finalization.
 _TERMINAL = {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
@@ -56,6 +75,12 @@ class ServerConfig:
     reaper_interval_s: float = 5.0
     worker_dead_after_s: float = 45.0
     max_artifact_mb: int = 2048
+    # Max body size (MB) for non-upload (JSON) requests. Multipart artifact
+    # uploads are exempt — they keep their own streaming ``max_artifact_mb`` limit.
+    max_request_mb: int = 16
+    # Allowed CORS origins (opt-in; off by default — trusted-LAN posture). When set,
+    # a browser on another origin (e.g. a separate dashboard) may call the API.
+    cors_origins: list[str] = field(default_factory=list)
 
 
 def _sanitize(value: Any) -> Any:
@@ -79,16 +104,66 @@ def create_app(config: ServerConfig) -> FastAPI:
         app.state.store = store
         app.state.broker = broker
         app.state.config = config
+        # (role, version) pairs already reported as divergent — throttles the
+        # version_divergence event/log so a chatty peer is noted only once.
+        app.state.seen_versions = set()
+        logger.info("server ready: nirs4all-cluster %s (api v%s) state=%s", CLUSTER_VERSION, API_VERSION, state)
         reaper = asyncio.create_task(_reaper_loop(app))
         try:
             yield
         finally:
+            logger.info("server shutting down")
             reaper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reaper
             db.close()
 
-    app = FastAPI(title="nirs4all-cluster", version="0.0.1", lifespan=lifespan)
+    app = FastAPI(title="nirs4all-cluster", version=__version__, lifespan=lifespan)
+
+    if config.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Version headers every /v1 response (including early rejections) advertises.
+    version_headers = {H_VERSION: CLUSTER_VERSION, H_API: str(API_VERSION)}
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        # Request-size guard for JSON endpoints. Multipart artifact uploads (paths
+        # ending in /artifacts) are exempt — they stream under max_artifact_mb.
+        if not path.endswith("/artifacts"):
+            length = request.headers.get("content-length")
+            if length is not None:
+                try:
+                    if int(length) > config.max_request_mb * 1024 * 1024:
+                        return JSONResponse(
+                            status_code=413,
+                            content={"detail": "request body too large"},
+                            headers=version_headers,
+                        )
+                except ValueError:
+                    pass
+        # Protocol/version handshake on the API surface.
+        if path.startswith("/v1/"):
+            peer_api = parse_api(request.headers.get(H_API))
+            if is_incompatible(peer_api):
+                return JSONResponse(
+                    status_code=426,
+                    content={"detail": f"incompatible protocol: server api={API_VERSION}, peer api={peer_api}"},
+                    headers=version_headers,
+                )
+            peer_version = request.headers.get(H_VERSION)
+            if is_divergent(peer_version):
+                _note_divergence(request.app, request.headers.get(H_ROLE, "client"), peer_version)
+        response = await call_next(request)
+        response.headers[H_VERSION] = CLUSTER_VERSION
+        response.headers[H_API] = str(API_VERSION)
+        return response
 
     # ------------------------------------------------------------------ #
     # Auth
@@ -111,11 +186,24 @@ def create_app(config: ServerConfig) -> FastAPI:
         return request.app.state.broker
 
     # ------------------------------------------------------------------ #
-    # Health
+    # Health / dashboard
     # ------------------------------------------------------------------ #
     @app.get("/")
     def health() -> dict[str, Any]:
-        return {"service": "nirs4all-cluster", "version": "0.0.1", "ok": True}
+        return {"service": "nirs4all-cluster", "version": CLUSTER_VERSION, "api_version": API_VERSION, "ok": True}
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/version")
+    def version() -> dict[str, Any]:
+        return {"service": "nirs4all-cluster", "version": CLUSTER_VERSION, "api_version": API_VERSION}
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/", include_in_schema=False)
+    def dashboard() -> FileResponse:
+        return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
 
     # ------------------------------------------------------------------ #
     # Client API
@@ -156,9 +244,29 @@ def create_app(config: ServerConfig) -> FastAPI:
         return _job_view(db, job_id)
 
     @app.get("/v1/jobs", dependencies=[Depends(auth)])
-    def list_jobs(request: Request, limit: int = 100) -> list[JobView]:
+    def list_jobs(
+        request: Request,
+        limit: int = 100,
+        status: str | None = None,
+        name: str | None = None,
+        created_before: float | None = None,
+    ) -> list[JobView]:
         db = db_of(request)
-        return [_job_view(db, row["id"]) for row in db.list_jobs(limit=limit)]
+        rows = db.list_jobs(limit=limit, status=status, name=name, created_before=created_before)
+        return [_job_view(db, row["id"]) for row in rows]
+
+    @app.get("/v1/stats", dependencies=[Depends(auth)])
+    def stats(request: Request) -> ClusterStats:
+        db = db_of(request)
+        workers = db.count_workers_by_status()
+        return ClusterStats(
+            server_version=CLUSTER_VERSION,
+            api_version=API_VERSION,
+            jobs_by_status=db.count_jobs_by_status(),
+            workers_alive=workers.get("alive", 0),
+            workers_dead=workers.get("dead", 0),
+            tasks_in_flight=db.count_tasks_in_flight(),
+        )
 
     @app.get("/v1/jobs/{job_id}", dependencies=[Depends(auth)])
     def get_job(job_id: str, request: Request) -> JobView:
@@ -277,6 +385,32 @@ def create_app(config: ServerConfig) -> FastAPI:
             pass
         finally:
             await broker.unsubscribe(job_id, queue)
+
+    @app.websocket("/v1/events/stream")
+    async def stream_all_events(websocket: WebSocket) -> None:
+        """Global live feed across all jobs + workers (powers the /ui dashboard)."""
+        provided = websocket.query_params.get("token") or ""
+        if config.token and not hmac.compare_digest(provided, config.token):
+            await websocket.close(code=4401)
+            return
+        db = websocket.app.state.db
+        broker = websocket.app.state.broker
+        await websocket.accept()
+        last_id = 0
+        for row in db.list_recent_events():
+            await websocket.send_json(_event_view(row).model_dump(mode="json"))
+            last_id = row["id"]
+        queue = await broker.subscribe_global()
+        try:
+            while True:
+                payload = await queue.get()
+                if payload["id"] > last_id:
+                    await websocket.send_json(_jsonable(payload))
+                    last_id = payload["id"]
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await broker.unsubscribe_global(queue)
 
     # ------------------------------------------------------------------ #
     # Worker API
@@ -418,6 +552,26 @@ def create_app(config: ServerConfig) -> FastAPI:
                 db.complete_task(task_id, worker_id, result.model_dump())
             except PermissionError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            # Pipeline version trace: if the client pinned a fingerprint for an
+            # inline pipeline and the worker ran something different, note it
+            # (non-fatal — the result still stands; this is traceability).
+            expected = None
+            with contextlib.suppress(ValueError, TypeError, AttributeError):
+                expected = (json.loads(row["payload_json"]).get("pipeline") or {}).get("expected_fingerprint")
+            if expected and result.pipeline_fingerprint and expected != result.pipeline_fingerprint:
+                logger.warning(
+                    "pipeline fingerprint mismatch on task %s: expected=%s actual=%s",
+                    task_id, expected, result.pipeline_fingerprint,
+                )
+                broker.emit(
+                    level="warning",
+                    type="pipeline_fingerprint_mismatch",
+                    message=f"task {task_id}: pipeline content differs from what was submitted",
+                    job_id=row["job_id"],
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    data={"expected": expected, "actual": result.pipeline_fingerprint},
+                )
         broker.emit(
             level="info",
             type="task_completed",
@@ -468,6 +622,8 @@ def create_app(config: ServerConfig) -> FastAPI:
         db = db_of(request)
         out = []
         for w in db.list_workers():
+            version = json.loads(w["version_json"]) if w["version_json"] else {}
+            cluster_version = version.get("nirs4all_cluster")
             out.append(
                 {
                     "id": w["id"],
@@ -477,11 +633,40 @@ def create_app(config: ServerConfig) -> FastAPI:
                     "slots_used": w["slots_used"],
                     "last_seen_at": w["last_seen_at"],
                     "labels": json.loads(w["labels_json"]),
+                    "capabilities": json.loads(w["capabilities_json"]) if w["capabilities_json"] else {},
+                    "version": version,
+                    "cluster_version": cluster_version,
+                    "version_divergent": is_divergent(cluster_version),
                 }
             )
         return out
 
     return app
+
+
+def _note_divergence(app: FastAPI, role: str, peer_version: str | None) -> None:
+    """Log + emit a one-shot event when a compatible peer runs a different version."""
+    seen: set[tuple[str, str | None]] = app.state.seen_versions
+    key = (role, peer_version)
+    if key in seen:
+        return
+    seen.add(key)
+    logger.warning(
+        "version divergence: %s runs nirs4all-cluster %s; server runs %s (compatible, api v%s)",
+        role, peer_version, CLUSTER_VERSION, API_VERSION,
+    )
+    broker: EventBroker = app.state.broker
+    broker.emit(
+        level="warning",
+        type="version_divergence",
+        message=f"{role} runs nirs4all-cluster {peer_version}; server runs {CLUSTER_VERSION} (compatible)",
+        data={
+            "role": role,
+            "peer_version": peer_version,
+            "server_version": CLUSTER_VERSION,
+            "api_version": API_VERSION,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -498,6 +683,7 @@ async def _reaper_loop(app: FastAPI) -> None:
         try:
             dead = db.mark_dead_workers(config.worker_dead_after_s)
             for worker_id in dead:
+                logger.warning("worker %s marked dead (no heartbeat)", worker_id)
                 broker.emit(
                     level="warning",
                     type="worker_dead",
@@ -518,6 +704,7 @@ async def _reaper_loop(app: FastAPI) -> None:
             for job_id in jobs:
                 _finalize_job(db, broker, job_id)
         except Exception as exc:  # reaper must never die
+            logger.exception("reaper iteration failed")
             broker.emit(level="error", type="reaper_error", message=str(exc))
 
 
@@ -614,6 +801,7 @@ def _finalize_job(db: Database, broker: EventBroker, job_id: str) -> None:
     # returns False and we skip the duplicate event (no IllegalTransition raised).
     if not db.try_set_job_status(job_id, final):
         return
+    logger.info("job %s finalized: %s", job_id, final.value)
     broker.emit(
         level="info" if final == JobStatus.SUCCEEDED else "warning",
         type=f"job_{final.value}",

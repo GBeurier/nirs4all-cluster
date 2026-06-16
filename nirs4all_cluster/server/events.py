@@ -21,6 +21,9 @@ class EventBroker:
     def __init__(self, db: Database):
         self.db = db
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        # Global subscribers receive *every* event regardless of job_id (the
+        # dashboard's live feed). Separate from the per-job fan-out.
+        self._global: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -43,6 +46,16 @@ class EventBroker:
                 subs.discard(queue)
                 if not subs:
                     self._subscribers.pop(job_id, None)
+
+    async def subscribe_global(self) -> asyncio.Queue:
+        async with self._lock:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
+            self._global.add(queue)
+            return queue
+
+    async def unsubscribe_global(self, queue: asyncio.Queue) -> None:
+        async with self._lock:
+            self._global.discard(queue)
 
     def emit(
         self,
@@ -81,20 +94,24 @@ class EventBroker:
             "message": message,
             "data": data or {},
         }
-        if job_id is not None:
-            # Sync FastAPI handlers run in a threadpool (no running loop), so
-            # schedule onto the recorded server loop thread-safely. Async callers
-            # and unit tests without a loop simply skip the live broadcast.
-            try:
-                running = asyncio.get_running_loop()
-                running.call_soon(self._broadcast, job_id, payload)
-            except RuntimeError:
-                if self._loop is not None and self._loop.is_running():
-                    self._loop.call_soon_threadsafe(self._broadcast, job_id, payload)
+        # Sync FastAPI handlers run in a threadpool (no running loop), so schedule
+        # onto the recorded server loop thread-safely. Async callers and unit tests
+        # without a loop simply skip the live broadcast. Every event reaches global
+        # subscribers; job-scoped events also reach that job's subscribers.
+        try:
+            running = asyncio.get_running_loop()
+            running.call_soon(self._broadcast, payload)
+        except RuntimeError:
+            if self._loop is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._broadcast, payload)
         return payload
 
-    def _broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
-        for queue in list(self._subscribers.get(job_id, ())):
+    def _broadcast(self, payload: dict[str, Any]) -> None:
+        job_id = payload.get("job_id")
+        queues = set(self._global)
+        if job_id is not None:
+            queues |= self._subscribers.get(job_id, set())
+        for queue in list(queues):
             if queue.full():
                 try:
                     queue.get_nowait()  # drop oldest

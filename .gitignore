@@ -9,6 +9,9 @@ __pycache__/
 build/
 dist/
 
+# Sphinx docs build output
+docs/_build/
+
 # Cluster runtime state (server queue + object store, worker task sandboxes)
 cluster-state/
 worker-state/
@@ -26,3 +29,6 @@ results/
 # coverage artifacts
 .coverage
 coverage.xml
+
+# --- untracked build/process docs (kept locally, 2026-06-16) ---
+WORKLOG.md

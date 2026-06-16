@@ -1,16 +1,30 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "nirs4all-cluster"
-version = "0.0.1"
-description = "Public alpha distributed job queue prototype for nirs4all.run() — server + polling workers."
+dynamic = ["version"]
+description = "Distributed job queue for nirs4all.run() — FastAPI server + polling workers."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "CeCILL-2.1 OR AGPL-3.0-or-later" }
+license = "CeCILL-2.1 OR AGPL-3.0-or-later"
+license-files = ["LICENSE", "LICENSES/*.txt", "LICENSES/COMMERCIAL-LICENSE*.md"]
 authors = [{ name = "nirs4all" }]
 keywords = ["nirs4all", "nirs", "cluster", "distributed", "job-queue"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Framework :: FastAPI",
+    "Typing :: Typed",
+]
 
 # Server + client + worker transport only. nirs4all itself is provided by the
 # worker's pre-provisioned environment (see PROTOTYPE_DESIGN.md non-goals); it is
@@ -38,12 +52,45 @@ dev = [
     "mypy>=1.9",
     "types-PyYAML",
 ]
+docs = [
+    "sphinx>=8.1,<9",
+    "myst-parser>=4.0,<5",
+    "linkify-it-py>=2.0,<3",
+    "furo>=2024.8.6",
+    "sphinx-copybutton>=0.5.2,<0.6",
+    "sphinxcontrib-mermaid>=1.0,<2",
+]
+
+[project.urls]
+Homepage = "https://nirs4all.org"
+Documentation = "https://nirs4all-cluster.readthedocs.io"
+Repository = "https://github.com/GBeurier/nirs4all-cluster"
+Issues = "https://github.com/GBeurier/nirs4all-cluster/issues"
+Changelog = "https://github.com/GBeurier/nirs4all-cluster/blob/main/CHANGELOG.md"
 
 [project.scripts]
 n4cluster = "nirs4all_cluster.cli:main"
 
+[tool.hatch.version]
+path = "nirs4all_cluster/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["nirs4all_cluster"]
+# Ship the typing marker and the dashboard assets inside the wheel.
+artifacts = ["nirs4all_cluster/py.typed", "nirs4all_cluster/server/static/**"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/nirs4all_cluster",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/README.md",
+    "/LICENSE",
+    "/LICENSES",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 120

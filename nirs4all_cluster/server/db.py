@@ -242,11 +242,57 @@ class Database:
         with self._lock:
             return self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
 
-    def list_jobs(self, limit: int = 100) -> list[sqlite3.Row]:
+    def list_jobs(
+        self,
+        limit: int = 100,
+        *,
+        status: str | None = None,
+        name: str | None = None,
+        created_before: float | None = None,
+    ) -> list[sqlite3.Row]:
+        """List jobs newest-first, optionally filtered.
+
+        ``created_before`` is the cursor for pagination: pass the ``created_at`` of
+        the last row from the previous page to fetch the next page.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if name:
+            clauses.append("name LIKE ?")
+            params.append(f"%{name}%")
+        if created_before is not None:
+            clauses.append("created_at < ?")
+            params.append(created_before)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
         with self._lock:
             return list(
-                self._conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+                self._conn.execute(
+                    f"SELECT * FROM jobs{where} ORDER BY created_at DESC, id DESC LIMIT ?", params
+                ).fetchall()
             )
+
+    def count_jobs_by_status(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
+            return {r["status"]: int(r["c"]) for r in rows}
+
+    def count_workers_by_status(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT status, COUNT(*) AS c FROM workers GROUP BY status").fetchall()
+            return {r["status"]: int(r["c"]) for r in rows}
+
+    def count_tasks_in_flight(self) -> int:
+        """Tasks currently leased or running across all workers."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM tasks WHERE status IN (?, ?)",
+                (TaskStatus.LEASED.value, TaskStatus.RUNNING.value),
+            ).fetchone()
+            return int(row["c"])
 
     def set_job_status(self, job_id: str, status: JobStatus, *, error: str | None = None) -> None:
         with self._lock:
@@ -702,6 +748,14 @@ class Database:
                     (job_id, after_id, limit),
                 ).fetchall()
             )
+
+    def list_recent_events(self, limit: int = 200) -> list[sqlite3.Row]:
+        """The most recent events across all jobs, oldest-first (global stream replay)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return list(reversed(rows))
 
 
 # --------------------------------------------------------------------------- #

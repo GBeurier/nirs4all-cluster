@@ -15,6 +15,7 @@ from typing import Any, Protocol
 import yaml
 
 from ..schemas import DatasetRef, PipelineRef, TaskPayload
+from ..versioning import fingerprint_file, fingerprint_obj
 
 # A callable the agent provides to fetch an uploaded artifact's bytes to a path.
 DownloadFn = Callable[[str, Path], Path]
@@ -80,12 +81,30 @@ def _materialize_dataset(ref: DatasetRef, inputs_dir: Path, download: DownloadFn
 def build_runner_spec(task: TaskPayload, workdir: Path, download: DownloadFn) -> dict[str, Any]:
     inputs_dir = workdir / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
+    pipeline_spec = _materialize_pipeline(task.pipeline, inputs_dir, download)
+    dataset_spec = _materialize_dataset(task.dataset, inputs_dir, download)
     return {
-        "pipeline": _materialize_pipeline(task.pipeline, inputs_dir, download),
-        "dataset": _materialize_dataset(task.dataset, inputs_dir, download),
+        "pipeline": pipeline_spec,
+        "dataset": dataset_spec,
         "params": dict(task.params),
         "outputs": task.outputs.model_dump(),
+        # Content fingerprint of the pipeline the worker actually runs. The runner
+        # ignores this key; the agent reads it back onto the TaskResult so results
+        # are traceable to an exact pipeline (and the server can compare it against
+        # any expected_fingerprint the client pinned).
+        "pipeline_fingerprint": _pipeline_fingerprint(task.pipeline, pipeline_spec),
     }
+
+
+def _pipeline_fingerprint(ref: PipelineRef, spec: dict[str, Any]) -> str:
+    """sha256 of the pipeline content, matching the client's hash for inline pipelines."""
+    if ref.kind == "inline_json":
+        return fingerprint_obj(ref.inline)
+    if spec.get("mode") == "path":
+        return fingerprint_file(spec["path"])
+    if ref.kind == "python_entrypoint":
+        return fingerprint_obj({"entrypoint": ref.entrypoint})
+    return fingerprint_obj(spec)
 
 
 def _safe_extract(archive: Path, dest: Path) -> None:
