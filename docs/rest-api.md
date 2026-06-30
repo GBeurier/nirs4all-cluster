@@ -1,8 +1,29 @@
 # REST & WebSocket API
 
-All `/v1` endpoints require the bearer token when the server is started with `--token`.
-Every `/v1` request/response also carries the version handshake headers
-(`X-N4C-Version`, `X-N4C-Api`, `X-N4C-Role`) — see {doc}`versioning`.
+All `/v1` endpoints are gated by **credential-bound rights** when the server is
+configured with principals (`--principal NAME:TOKEN:ROLES` / `--auth-file`) or a
+legacy `--token` (kept as a single all-rights admin). With neither configured the
+server runs **open (dev mode)**. Every `/v1` request/response also carries the
+version handshake headers (`X-N4C-Version`, `X-N4C-Api`, `X-N4C-Role`) — see
+{doc}`versioning`.
+
+## Authorization & rights
+
+A caller's rights come from its bearer credential, **never** from the advisory
+`X-N4C-Role` header. A missing/invalid credential returns **401**; a valid
+credential lacking the required right returns **403**.
+
+| Right | Gates |
+|---|---|
+| `submit` | `POST /v1/jobs`, `POST /v1/artifacts` (input upload) |
+| `read` | every `GET /v1/jobs*`, `/v1/stats`, `/v1/workers`, `GET /v1/artifacts/{id}`, both WS streams (`?token=`) |
+| `cancel` | `POST /v1/jobs/{id}/cancel` |
+| `execute` | the whole worker API (`POST /v1/workers/*`, `POST /v1/tasks/*`) |
+| `admin` | wildcard — grants every right |
+
+Roles bundle rights: `submitter` = submit+read+cancel, `executor` = read+execute
+(the worker agent), `viewer` = read, `admin` = all. `register` echoes the granted
+rights in its `WorkerRegistered` response for executor self-diagnosis.
 
 ## Health & dashboard (no auth)
 

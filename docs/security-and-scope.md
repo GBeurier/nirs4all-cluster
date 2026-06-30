@@ -7,8 +7,14 @@ hardened for the open internet or for untrusted multi-tenant use.
 
 This beta provides, **by design**:
 
-- **A single static bearer token** — no mTLS, no OIDC, no per-identity credentials, no
-  rotation. Treat the token as a shared secret.
+- **Credential-bound RBAC over static bearer tokens.** Each principal is a named
+  identity bound to a static token and granted rights from
+  `{submit, read, cancel, execute, admin}` (composed into the roles `submitter`,
+  `executor` = read+execute, `viewer`, `admin`). Rights are derived from the
+  credential, **never** from the advisory `X-N4C-Role` header. A bare `--token`
+  remains supported as a single all-rights admin principal; with neither a token
+  nor principals the server runs **open (dev mode)**. Still **no mTLS, no OIDC, no
+  rotation** — tokens are shared secrets, only safe on a trusted LAN.
 - **No sandbox.** A worker runs `nirs4all.run()` in a subprocess with its own privileges.
   `python_entrypoint` jobs run **arbitrary Python** and are gated behind **both**
   `--allow-python-jobs` (server) and `--allow-python` (worker) — never enable them when a

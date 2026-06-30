@@ -60,6 +60,37 @@ def _csv_list(values: list[str] | None) -> list[str]:
     return out
 
 
+def _load_principals(specs: list[str] | None, auth_file: str | None) -> list[Any]:
+    """Build RBAC principals from ``--principal NAME:TOKEN:ROLES`` and/or ``--auth-file`` JSON.
+
+    Raises ``ValueError`` on a malformed spec or unknown role so the server fails
+    fast at startup rather than silently granting nothing.
+    """
+    from .server.auth import Principal, rights_from_roles
+
+    principals: list[Any] = []
+    for spec in specs or []:
+        name, sep, rest = spec.partition(":")
+        token, sep2, roles_csv = rest.partition(":")
+        if not (name and sep and token):
+            raise ValueError(f"--principal must be NAME:TOKEN:ROLES (got {spec!r})")
+        roles = [r.strip() for r in roles_csv.split(",") if r.strip()]
+        if not roles:
+            raise ValueError(f"--principal {name!r} needs at least one role")
+        principals.append(Principal(name=name, token=token, rights=rights_from_roles(roles)))
+    if auth_file:
+        entries = json.loads(Path(auth_file).read_text(encoding="utf-8"))
+        for entry in entries:
+            principals.append(
+                Principal(
+                    name=entry["name"],
+                    token=entry["token"],
+                    rights=rights_from_roles(entry.get("roles", [])),
+                )
+            )
+    return principals
+
+
 def cmd_server(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -68,16 +99,23 @@ def cmd_server(args: argparse.Namespace) -> int:
 
     configure_logging(args.log_level, args.log_file)
     token = args.token or os.environ.get("N4CLUSTER_TOKEN")
+    try:
+        principals = _load_principals(args.principal, args.auth_file)
+    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+        print(f"[n4cluster] invalid principals config: {exc}")
+        return 2
     config = ServerConfig(
         state_dir=args.state,
         token=token,
+        principals=principals,
         allow_python_jobs=args.allow_python_jobs,
         lease_ttl_s=args.lease_ttl,
         cors_origins=_csv_list(args.cors_origin),
     )
     app = create_app(config)
+    auth_mode = "rbac" if principals else ("token" if token else "off")
     print(f"[n4cluster] server on http://{args.host}:{args.port}  state={args.state}  "
-          f"auth={'on' if token else 'off'}  python_jobs={'on' if args.allow_python_jobs else 'off'}")
+          f"auth={auth_mode}  python_jobs={'on' if args.allow_python_jobs else 'off'}")
     print(f"[n4cluster] dashboard: http://{args.host}:{args.port}/ui")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -237,7 +275,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_server.add_argument("--host", default="127.0.0.1")
     p_server.add_argument("--port", type=int, default=8765)
     p_server.add_argument("--state", default="./cluster-state")
-    p_server.add_argument("--token", help="static auth token (or $N4CLUSTER_TOKEN)")
+    p_server.add_argument(
+        "--token",
+        help="legacy single all-rights admin token (or $N4CLUSTER_TOKEN); for RBAC use --principal",
+    )
+    p_server.add_argument(
+        "--principal",
+        action="append",
+        metavar="NAME:TOKEN:ROLES",
+        help="credential-bound RBAC principal, e.g. --principal alice:s3cr3t:submitter "
+             "(roles: submitter,executor,viewer,admin; comma-separate to combine; repeatable)",
+    )
+    p_server.add_argument(
+        "--auth-file",
+        help='JSON file of [{"name","token","roles":[...]}] principals (alternative to --principal)',
+    )
     p_server.add_argument("--allow-python-jobs", action="store_true")
     p_server.add_argument("--lease-ttl", type=float, default=60.0)
     p_server.add_argument("--log-level", default="info")

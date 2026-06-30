@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
 import json
 import logging
 import math
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,6 +52,7 @@ from ..versioning import (
     parse_api,
 )
 from .artifacts import ArtifactStore, ArtifactTooLarge
+from .auth import ALL_RIGHTS, AuthError, Authorizer, Principal, Right, bearer_token
 from .db import Database
 from .events import EventBroker
 from .scheduler import IllegalTransition, aggregate_metric_better
@@ -68,7 +69,14 @@ _TERMINAL = {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CAN
 @dataclass
 class ServerConfig:
     state_dir: str
+    # Legacy single shared secret. When set (and no richer principals are given)
+    # it is treated as one all-rights ``admin`` principal — preserving the
+    # prototype's "one --token ${N4CLUSTER_TOKEN} everything" trusted-LAN behaviour.
     token: str | None = None
+    # Credential-bound RBAC principals (named identity → static token → rights).
+    # Any non-empty list (or a set ``token``) switches the server from open/dev
+    # mode into enforced mode. See ``server/auth.py``.
+    principals: list[Principal] = field(default_factory=list)
     allow_python_jobs: bool = False
     lease_ttl_s: float = 60.0
     heartbeat_interval_s: float = 10.0
@@ -90,9 +98,37 @@ def _sanitize(value: Any) -> Any:
     return value
 
 
+def _authorizer_from_config(config: ServerConfig) -> Authorizer:
+    """Compose the RBAC principals from the server config.
+
+    Explicit ``principals`` are used as-is; a bare legacy ``token`` (with no
+    explicit principals, or alongside them) is added as one all-rights ``admin``
+    principal so an existing single-token deployment keeps working unchanged.
+    With neither a token nor principals the authorizer runs in open/dev mode.
+    """
+    principals = list(config.principals)
+    if config.token:
+        principals.append(Principal(name="default", token=config.token, rights=ALL_RIGHTS))
+    return Authorizer(principals)
+
+
+def _ws_authorized(authorizer: Authorizer, websocket: WebSocket, *rights: Right) -> bool:
+    """True if the WebSocket ``?token=`` credential grants every right.
+
+    WebSockets take the token as a query param (browser headers are awkward). In
+    open/dev mode the authorizer grants all rights, so this returns True.
+    """
+    try:
+        authorizer.check(websocket.query_params.get("token") or None, rights)
+    except AuthError:
+        return False
+    return True
+
+
 def create_app(config: ServerConfig) -> FastAPI:
     state = Path(config.state_dir)
     state.mkdir(parents=True, exist_ok=True)
+    authorizer = _authorizer_from_config(config)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -166,15 +202,26 @@ def create_app(config: ServerConfig) -> FastAPI:
         return response
 
     # ------------------------------------------------------------------ #
-    # Auth
+    # Auth — credential-bound rights (see server/auth.py)
     # ------------------------------------------------------------------ #
-    def auth(authorization: str | None = Header(default=None)) -> None:
-        token = config.token
-        if not token:
-            return  # dev mode: no auth
-        expected = f"Bearer {token}"
-        if authorization is None or not hmac.compare_digest(authorization, expected):
-            raise HTTPException(status_code=401, detail="invalid or missing token")
+    def requires(*rights: Right) -> Callable[..., Principal]:
+        """Build a route dependency that authenticates the caller and asserts ``rights``.
+
+        Rights come from the bearer credential, never from the advisory
+        ``X-N4C-Role`` header. In open/dev mode (no principals configured) every
+        request is granted all rights.
+        """
+
+        def dependency(request: Request, authorization: str | None = Header(default=None)) -> Principal:
+            try:
+                principal = authorizer.check(bearer_token(authorization), rights)
+            except AuthError as exc:
+                raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+            # Record the principal for handlers/audit that need the identity.
+            request.state.principal = principal
+            return principal
+
+        return dependency
 
     def db_of(request: Request) -> Database:
         return request.app.state.db
@@ -208,7 +255,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     # ------------------------------------------------------------------ #
     # Client API
     # ------------------------------------------------------------------ #
-    @app.post("/v1/jobs", dependencies=[Depends(auth)])
+    @app.post("/v1/jobs", dependencies=[Depends(requires(Right.SUBMIT))])
     def submit_job(req: JobRequest, request: Request) -> JobView:
         db = db_of(request)
         broker = broker_of(request)
@@ -243,7 +290,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         )
         return _job_view(db, job_id)
 
-    @app.get("/v1/jobs", dependencies=[Depends(auth)])
+    @app.get("/v1/jobs", dependencies=[Depends(requires(Right.READ))])
     def list_jobs(
         request: Request,
         limit: int = 100,
@@ -255,7 +302,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         rows = db.list_jobs(limit=limit, status=status, name=name, created_before=created_before)
         return [_job_view(db, row["id"]) for row in rows]
 
-    @app.get("/v1/stats", dependencies=[Depends(auth)])
+    @app.get("/v1/stats", dependencies=[Depends(requires(Right.READ))])
     def stats(request: Request) -> ClusterStats:
         db = db_of(request)
         workers = db.count_workers_by_status()
@@ -268,21 +315,21 @@ def create_app(config: ServerConfig) -> FastAPI:
             tasks_in_flight=db.count_tasks_in_flight(),
         )
 
-    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(auth)])
+    @app.get("/v1/jobs/{job_id}", dependencies=[Depends(requires(Right.READ))])
     def get_job(job_id: str, request: Request) -> JobView:
         db = db_of(request)
         if db.get_job(job_id) is None:
             raise HTTPException(status_code=404, detail="job not found")
         return _job_view(db, job_id)
 
-    @app.get("/v1/jobs/{job_id}/tasks", dependencies=[Depends(auth)])
+    @app.get("/v1/jobs/{job_id}/tasks", dependencies=[Depends(requires(Right.READ))])
     def get_job_tasks(job_id: str, request: Request) -> list[TaskView]:
         db = db_of(request)
         if db.get_job(job_id) is None:
             raise HTTPException(status_code=404, detail="job not found")
         return [_task_view(row) for row in db.list_tasks_for_job(job_id)]
 
-    @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(auth)])
+    @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(requires(Right.CANCEL))])
     def cancel_job(job_id: str, request: Request) -> JobView:
         db = db_of(request)
         broker = broker_of(request)
@@ -307,13 +354,13 @@ def create_app(config: ServerConfig) -> FastAPI:
         _finalize_job(db, broker, job_id)
         return _job_view(db, job_id)
 
-    @app.get("/v1/jobs/{job_id}/events", dependencies=[Depends(auth)])
+    @app.get("/v1/jobs/{job_id}/events", dependencies=[Depends(requires(Right.READ))])
     def get_events(job_id: str, request: Request, after_id: int = 0, limit: int = 500) -> list[EventView]:
         db = db_of(request)
         rows = db.list_events(job_id, after_id=after_id, limit=limit)
         return [_event_view(r) for r in rows]
 
-    @app.get("/v1/jobs/{job_id}/artifacts", dependencies=[Depends(auth)])
+    @app.get("/v1/jobs/{job_id}/artifacts", dependencies=[Depends(requires(Right.READ))])
     def get_job_artifacts(job_id: str, request: Request) -> list[dict[str, Any]]:
         db = db_of(request)
         out = []
@@ -329,7 +376,7 @@ def create_app(config: ServerConfig) -> FastAPI:
             out.append({"role": row["role"], "task_id": row["task_id"] or None, **view.model_dump()})
         return out
 
-    @app.post("/v1/artifacts", dependencies=[Depends(auth)])
+    @app.post("/v1/artifacts", dependencies=[Depends(requires(Right.SUBMIT))])
     async def upload_input_artifact(
         request: Request, file: UploadFile, kind: str = "input"
     ) -> dict[str, Any]:
@@ -350,7 +397,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         )
         return {"artifact_id": artifact_id, "sha256": sha, "size_bytes": size}
 
-    @app.get("/v1/artifacts/{artifact_id}", dependencies=[Depends(auth)])
+    @app.get("/v1/artifacts/{artifact_id}", dependencies=[Depends(requires(Right.READ))])
     def download_artifact(artifact_id: str, request: Request) -> FileResponse:
         db = db_of(request)
         row = db.get_artifact(artifact_id)
@@ -361,9 +408,8 @@ def create_app(config: ServerConfig) -> FastAPI:
 
     @app.websocket("/v1/jobs/{job_id}/events/stream")
     async def stream_events(websocket: WebSocket, job_id: str) -> None:
-        # Auth via ?token= query param for WS (headers are awkward in browsers).
-        provided = websocket.query_params.get("token") or ""
-        if config.token and not hmac.compare_digest(provided, config.token):
+        # Streaming events is a read, so the ?token= credential needs `read`.
+        if not _ws_authorized(authorizer, websocket, Right.READ):
             await websocket.close(code=4401)
             return
         db = websocket.app.state.db
@@ -389,8 +435,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.websocket("/v1/events/stream")
     async def stream_all_events(websocket: WebSocket) -> None:
         """Global live feed across all jobs + workers (powers the /ui dashboard)."""
-        provided = websocket.query_params.get("token") or ""
-        if config.token and not hmac.compare_digest(provided, config.token):
+        if not _ws_authorized(authorizer, websocket, Right.READ):
             await websocket.close(code=4401)
             return
         db = websocket.app.state.db
@@ -415,7 +460,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     # ------------------------------------------------------------------ #
     # Worker API
     # ------------------------------------------------------------------ #
-    @app.post("/v1/workers/register", dependencies=[Depends(auth)])
+    @app.post("/v1/workers/register", dependencies=[Depends(requires(Right.EXECUTE))])
     def register_worker(reg: WorkerRegister, request: Request) -> WorkerRegistered:
         db = db_of(request)
         broker = broker_of(request)
@@ -427,13 +472,16 @@ def create_app(config: ServerConfig) -> FastAPI:
             worker_id=worker_id,
             data={"labels": reg.labels, "slots": reg.slots_total},
         )
+        # Echo the granted rights so the executor can self-diagnose (additive).
+        principal: Principal = request.state.principal
         return WorkerRegistered(
             worker_id=worker_id,
             heartbeat_interval_s=config.heartbeat_interval_s,
             lease_ttl_s=config.lease_ttl_s,
+            rights=sorted(r.value for r in principal.rights),
         )
 
-    @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(auth)])
+    @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(requires(Right.EXECUTE))])
     def heartbeat(worker_id: str, request: Request) -> HeartbeatAck:
         db = db_of(request)
         if not db.heartbeat_worker(worker_id, config.lease_ttl_s):
@@ -449,7 +497,7 @@ def create_app(config: ServerConfig) -> FastAPI:
                 cancel_ids.append(task_id)
         return HeartbeatAck(ok=True, cancel_task_ids=cancel_ids)
 
-    @app.post("/v1/workers/{worker_id}/lease", dependencies=[Depends(auth)])
+    @app.post("/v1/workers/{worker_id}/lease", dependencies=[Depends(requires(Right.EXECUTE))])
     def lease(worker_id: str, request: Request) -> LeaseResponse:
         db = db_of(request)
         broker = broker_of(request)
@@ -468,7 +516,7 @@ def create_app(config: ServerConfig) -> FastAPI:
             )
         return LeaseResponse(task=payload)
 
-    @app.post("/v1/tasks/{task_id}/start", dependencies=[Depends(auth)])
+    @app.post("/v1/tasks/{task_id}/start", dependencies=[Depends(requires(Right.EXECUTE))])
     def start_task(task_id: str, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
@@ -491,7 +539,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         )
         return {"ok": True}
 
-    @app.post("/v1/tasks/{task_id}/events", dependencies=[Depends(auth)])
+    @app.post("/v1/tasks/{task_id}/events", dependencies=[Depends(requires(Right.EXECUTE))])
     def task_event(task_id: str, ev: TaskEvent, request: Request) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
@@ -509,7 +557,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         )
         return {"ok": True}
 
-    @app.post("/v1/tasks/{task_id}/artifacts", dependencies=[Depends(auth)])
+    @app.post("/v1/tasks/{task_id}/artifacts", dependencies=[Depends(requires(Right.EXECUTE))])
     async def upload_artifact(
         task_id: str,
         request: Request,
@@ -533,7 +581,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         db.link_job_artifact(row["job_id"], task_id, role, artifact_id)
         return {"artifact_id": artifact_id, "sha256": sha, "size_bytes": size}
 
-    @app.post("/v1/tasks/{task_id}/complete", dependencies=[Depends(auth)])
+    @app.post("/v1/tasks/{task_id}/complete", dependencies=[Depends(requires(Right.EXECUTE))])
     def complete_task(task_id: str, result: TaskResult, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
@@ -584,7 +632,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         _finalize_job(db, broker, row["job_id"])
         return {"ok": True}
 
-    @app.post("/v1/tasks/{task_id}/fail", dependencies=[Depends(auth)])
+    @app.post("/v1/tasks/{task_id}/fail", dependencies=[Depends(requires(Right.EXECUTE))])
     def fail_task(task_id: str, failure: TaskFailure, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
@@ -617,7 +665,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         _finalize_job(db, broker, row["job_id"])
         return {"ok": True, "requeued": requeued}
 
-    @app.get("/v1/workers", dependencies=[Depends(auth)])
+    @app.get("/v1/workers", dependencies=[Depends(requires(Right.READ))])
     def list_workers(request: Request) -> list[dict[str, Any]]:
         db = db_of(request)
         out = []

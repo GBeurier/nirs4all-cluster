@@ -18,7 +18,19 @@ Run the coordinator (and the `/ui` dashboard).
 : directory for `store.sqlite` and `objects/`.
 
 `--token`
-: static bearer token (or `$N4CLUSTER_TOKEN`). When unset the server runs **without** auth.
+: legacy single bearer token (or `$N4CLUSTER_TOKEN`), treated as one **all-rights
+  admin** principal. When neither `--token` nor any principal is set the server runs
+  **open (dev mode)**.
+
+`--principal NAME:TOKEN:ROLES` (repeatable)
+: a credential-bound RBAC principal, e.g. `--principal alice:s3cr3t:submitter`. Roles
+  are `submitter`, `executor`, `viewer`, `admin` (comma-separate to combine); they
+  grant rights from `{submit, read, cancel, execute, admin}`. Any principal switches
+  the server into enforced mode.
+
+`--auth-file`
+: JSON file of `[{"name","token","roles":[...]}]` principals (alternative to repeating
+  `--principal`).
 
 `--allow-python-jobs`
 : permit `python_entrypoint` pipelines (arbitrary Python — trusted submitters only).

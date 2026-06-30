@@ -217,6 +217,9 @@ class WorkerRegistered(BaseModel):
     worker_id: str
     heartbeat_interval_s: float = 10.0
     lease_ttl_s: float = 60.0
+    # Rights the server granted the registering credential (diagnostics only;
+    # additive, non-breaking). Empty in open/dev mode is also valid.
+    rights: list[str] = Field(default_factory=list)
 
 
 class HeartbeatAck(BaseModel):

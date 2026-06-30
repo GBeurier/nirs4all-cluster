@@ -162,6 +162,9 @@ class WorkerAgent:
         self.worker_id = data["worker_id"]
         self._heartbeat_interval = data.get("heartbeat_interval_s", 10.0)
         logger.info("registered as %s (slots=%s, labels=%s)", self.worker_id, self.slots, self.labels)
+        granted = data.get("rights") or []
+        if granted:
+            logger.info("server granted rights: %s", ", ".join(granted))
         return self.worker_id
 
     # ------------------------------------------------------------------ #
