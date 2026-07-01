@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from nirs4all_cluster.cli import _run_job_from_args, build_parser, main
 
 
@@ -49,3 +51,24 @@ def test_run_command_rejects_bad_param_before_connecting(capsys):
 
     assert rc == 2
     assert "invalid input" in capsys.readouterr().err
+
+
+def test_cli_forbidden_message_exposes_missing_right(cluster, tmp_path, capsys):
+    job_file = tmp_path / "job.json"
+    job_file.write_text(
+        json.dumps(
+            {
+                "type": "nirs4all.run",
+                "pipeline": {"kind": "path", "path": "/p.yaml"},
+                "dataset": {"kind": "shared_path", "path": "/data"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main(["submit", str(job_file), "--server", cluster.base_url, "--token", cluster.viewer])
+
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert "forbidden (as dash)" in err
+    assert "right(s): submit" in err

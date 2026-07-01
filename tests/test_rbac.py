@@ -149,6 +149,13 @@ def _worker_body():
     return {"slots_total": 1, "version": {"packages": {"nirs4all": "0.9.1"}}}
 
 
+def _assert_missing_right(response, right: str) -> None:
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "principal 'dash'" in detail
+    assert f"required right(s): {right}" in detail
+
+
 @pytest.fixture
 def rbac_client(tmp_path):
     with TestClient(_rbac_app(tmp_path)) as c:
@@ -187,11 +194,76 @@ def test_executor_can_register_lease_read_not_submit_cancel(rbac_client):
 
 
 def test_viewer_is_read_only(rbac_client):
+    job_id = rbac_client.post("/v1/jobs", json=_job(), headers=_hdr(ADMIN)).json()["id"]
+    worker_id = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()[
+        "worker_id"
+    ]
+    task_id = rbac_client.post(f"/v1/workers/{worker_id}/lease", headers=_hdr(EXECUTOR)).json()["task"]["task_id"]
+
     assert rbac_client.get("/v1/jobs", headers=_hdr(VIEWER)).status_code == 200
+    assert rbac_client.get(f"/v1/jobs/{job_id}", headers=_hdr(VIEWER)).status_code == 200
+    assert rbac_client.get(f"/v1/jobs/{job_id}/tasks", headers=_hdr(VIEWER)).status_code == 200
+    assert rbac_client.get(f"/v1/jobs/{job_id}/events", headers=_hdr(VIEWER)).status_code == 200
+    assert rbac_client.get(f"/v1/jobs/{job_id}/artifacts", headers=_hdr(VIEWER)).status_code == 200
     assert rbac_client.get("/v1/stats", headers=_hdr(VIEWER)).status_code == 200
     assert rbac_client.get("/v1/workers", headers=_hdr(VIEWER)).status_code == 200
-    assert rbac_client.post("/v1/jobs", json=_job(), headers=_hdr(VIEWER)).status_code == 403
-    assert rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(VIEWER)).status_code == 403
+
+    _assert_missing_right(rbac_client.post("/v1/jobs", json=_job(), headers=_hdr(VIEWER)), "submit")
+    _assert_missing_right(rbac_client.post(f"/v1/jobs/{job_id}/cancel", headers=_hdr(VIEWER)), "cancel")
+    _assert_missing_right(
+        rbac_client.post(
+            "/v1/artifacts",
+            params={"kind": "input"},
+            files={"file": ("pipeline.yaml", b"pipeline: {}", "text/yaml")},
+            headers=_hdr(VIEWER),
+        ),
+        "submit",
+    )
+    _assert_missing_right(
+        rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(VIEWER)),
+        "execute",
+    )
+    _assert_missing_right(rbac_client.post(f"/v1/workers/{worker_id}/heartbeat", headers=_hdr(VIEWER)), "execute")
+    _assert_missing_right(rbac_client.post(f"/v1/workers/{worker_id}/lease", headers=_hdr(VIEWER)), "execute")
+    _assert_missing_right(
+        rbac_client.post(f"/v1/tasks/{task_id}/start", params={"worker_id": worker_id}, headers=_hdr(VIEWER)),
+        "execute",
+    )
+    _assert_missing_right(
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/events",
+            json={"level": "info", "message": "viewer cannot mutate"},
+            headers=_hdr(VIEWER),
+        ),
+        "execute",
+    )
+    _assert_missing_right(
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/artifacts",
+            params={"role": "logs", "kind": "log"},
+            files={"file": ("log.txt", b"viewer cannot mutate", "text/plain")},
+            headers=_hdr(VIEWER),
+        ),
+        "execute",
+    )
+    _assert_missing_right(
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/complete",
+            params={"worker_id": worker_id},
+            json={"status": "succeeded", "duration_seconds": 0.1, "metrics": {"best_rmse": 0.2}},
+            headers=_hdr(VIEWER),
+        ),
+        "execute",
+    )
+    _assert_missing_right(
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/fail",
+            params={"worker_id": worker_id},
+            json={"error": "viewer cannot mutate"},
+            headers=_hdr(VIEWER),
+        ),
+        "execute",
+    )
 
 
 def test_admin_can_do_everything(rbac_client):
