@@ -5,6 +5,7 @@ Subcommands:
     n4cluster server   --host 0.0.0.0 --port 8765 --state ./cluster-state [--token ${N4CLUSTER_TOKEN} [--allow-python-jobs]
     n4cluster worker   --server URL [--token ${N4CLUSTER_TOKEN} [--labels k=v,...] [--slots N] [--allow-python]
     n4cluster submit   job.yaml [--server URL] [--token ${N4CLUSTER_TOKEN} [--wait] [--out DIR]
+    n4cluster run      --pipeline P.yaml --dataset DATA [--param k=v] [--wait]
     n4cluster status   JOB_ID
     n4cluster jobs     [--status S] [--name N] [--limit L]
     n4cluster logs     JOB_ID
@@ -26,7 +27,7 @@ from typing import Any
 
 import yaml
 
-from .client import ClusterClient
+from .client import ClusterClient, build_nirs4all_run_request
 from .client_errors import (
     ClusterAuthError,
     ClusterConnectionError,
@@ -65,6 +66,57 @@ def _csv_list(values: list[str] | None) -> list[str]:
     for value in values or []:
         out.extend(p.strip() for p in value.split(",") if p.strip())
     return out
+
+
+def _parse_key_values(raw: list[str] | None, *, option: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for item in raw or []:
+        key, sep, value = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ValueError(f"{option} expects KEY=VALUE (got {item!r})")
+        parsed[key] = yaml.safe_load(value)
+    return parsed
+
+
+def _parse_string_key_values(raw: list[str] | None, *, option: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in raw or []:
+        key, sep, value = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ValueError(f"{option} expects KEY=VALUE (got {item!r})")
+        parsed[key] = value.strip()
+    return parsed
+
+
+def _run_job_from_args(args: argparse.Namespace) -> Any:
+    pipelines = args.pipeline if len(args.pipeline) > 1 else None
+    pipeline = None if pipelines is not None else args.pipeline[0]
+    datasets = args.dataset if len(args.dataset) > 1 else None
+    dataset = None if datasets is not None else args.dataset[0]
+    labels = _parse_string_key_values(args.require_label, option="--require-label")
+    requirements: dict[str, Any] | None = {"labels": labels} if labels else None
+    outputs = {
+        "export_best_model": not args.no_export_best_model,
+        "keep_task_workspace": args.keep_task_workspace,
+    }
+    return build_nirs4all_run_request(
+        pipeline=pipeline,
+        pipelines=pipelines,
+        dataset=dataset,
+        datasets=datasets,
+        params=_parse_key_values(args.param, option="--param"),
+        n_jobs=args.n_jobs,
+        inner_n_jobs=args.inner_n_jobs,
+        name=args.name,
+        priority=args.priority,
+        requirements=requirements,
+        outputs=outputs,
+        rank_metric=args.rank_metric,
+        rank_mode=args.rank_mode,
+        idempotency_key=args.idempotency_key,
+    )
 
 
 def _load_principals(specs: list[str] | None, auth_file: str | None) -> list[Any]:
@@ -181,6 +233,23 @@ def cmd_submit(args: argparse.Namespace) -> int:
             job = client.wait(job.id, timeout=args.timeout)
             print(f"finished  status={job.status.value}  "
                   f"best[{spec.get('rank_metric', 'best_rmse')}]={job.aggregate.best_metric}")
+            _print_ranking(job)
+            if args.out:
+                written = client.download_all_artifacts(job.id, args.out)
+                print(f"downloaded {len(written)} artifact(s) to {args.out}")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    req = _run_job_from_args(args)
+    with _client(args) as client:
+        job = client.submit(req)
+        scope = req.parity.scope if req.parity else "unknown"
+        print(f"submitted nirs4all.run job {job.id}  status={job.status.value}  "
+              f"tasks={job.aggregate.num_tasks}  parity={scope}")
+        if args.wait:
+            job = client.wait(job.id, timeout=args.timeout)
+            print(f"finished  status={job.status.value}  best[{req.rank_metric}]={job.aggregate.best_metric}")
             _print_ranking(job)
             if args.out:
                 written = client.download_all_artifacts(job.id, args.out)
@@ -336,6 +405,26 @@ def build_parser() -> argparse.ArgumentParser:
     add_conn(p_submit)
     p_submit.set_defaults(func=cmd_submit)
 
+    p_run = sub.add_parser("run", help="submit a nirs4all.run job without a job file")
+    p_run.add_argument("--pipeline", action="append", required=True, help="pipeline YAML/JSON path on workers")
+    p_run.add_argument("--dataset", action="append", required=True, help="dataset path on workers")
+    p_run.add_argument("--param", action="append", help="nirs4all.run parameter as KEY=YAML_VALUE")
+    p_run.add_argument("--n-jobs", type=int, default=None, help="local nirs4all.run n_jobs mapped to inner_n_jobs")
+    p_run.add_argument("--inner-n-jobs", type=int, default=None, help="worker-local nirs4all.run n_jobs")
+    p_run.add_argument("--name", default=None)
+    p_run.add_argument("--priority", type=int, default=0)
+    p_run.add_argument("--rank-metric", default="best_rmse")
+    p_run.add_argument("--rank-mode", choices=["min", "max"], default="min")
+    p_run.add_argument("--idempotency-key", default=None)
+    p_run.add_argument("--require-label", action="append", help="worker label requirement as KEY=VALUE")
+    p_run.add_argument("--no-export-best-model", action="store_true")
+    p_run.add_argument("--keep-task-workspace", action="store_true")
+    p_run.add_argument("--wait", action="store_true")
+    p_run.add_argument("--timeout", type=float, default=None)
+    p_run.add_argument("--out", help="download artifacts here after completion")
+    add_conn(p_run)
+    p_run.set_defaults(func=cmd_run)
+
     p_status = sub.add_parser("status", help="show job status + ranking")
     p_status.add_argument("job_id")
     add_conn(p_status)
@@ -390,6 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     except ClusterVersionError as exc:
         print(f"[n4cluster] {exc}", file=sys.stderr)
+        return 2
+    except (ValueError, OSError, json.JSONDecodeError, yaml.YAMLError) as exc:
+        print(f"[n4cluster] invalid input: {exc}", file=sys.stderr)
         return 2
     except ClusterError as exc:
         print(f"[n4cluster] error: {exc}", file=sys.stderr)

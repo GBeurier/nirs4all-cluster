@@ -77,6 +77,12 @@ Run a polling worker (needs a provisioned `nirs4all` environment).
 `n4cluster submit JOB.yaml [--wait] [--timeout S] [--out DIR]`
 : submit a YAML/JSON job; optionally block and download artifacts.
 
+`n4cluster run --pipeline P.yaml --dataset DATA [--param KEY=YAML] [--n-jobs N] [--wait]`
+: build and submit a `nirs4all.run` job without writing a job file. Repeat
+  `--pipeline` and/or `--dataset` to submit an explicit matrix. `--n-jobs` is translated to
+  worker-local `inner_n_jobs`; workspaces are always isolated per task. The submitted job
+  carries the same `DistributedRunParity` contract as the Python adapter.
+
 `n4cluster status JOB_ID`
 : status, task counts, best metric and ranking.
 
