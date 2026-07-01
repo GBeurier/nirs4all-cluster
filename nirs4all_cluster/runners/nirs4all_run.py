@@ -40,6 +40,17 @@ def _sanitize(value: Any) -> Any:
     return value
 
 
+def _jsonable(value: Any) -> Any:
+    value = _sanitize(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return repr(value)
+
+
 def _load_pipeline(spec: dict[str, Any], allow_python: bool) -> Any:
     mode = spec.get("mode")
     if mode == "path":
@@ -75,6 +86,15 @@ def _summarize(result: Any, nirs4all_version: str, duration: float) -> dict[str,
         except Exception:
             return None
 
+    raw_extra = attr("extra")
+    extra = _jsonable(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra.update(
+        {
+            "best_model": (result.best or {}).get("model_name") if hasattr(result, "best") else None,
+            "task_type": (result.best or {}).get("task_type") if hasattr(result, "best") else None,
+            "metric": (result.best or {}).get("metric") if hasattr(result, "best") else None,
+        }
+    )
     return {
         "status": "succeeded",
         "nirs4all_version": nirs4all_version,
@@ -87,11 +107,7 @@ def _summarize(result: Any, nirs4all_version: str, duration: float) -> dict[str,
             "best_accuracy": attr("best_accuracy"),
         },
         "counts": {"num_predictions": int(getattr(result, "num_predictions", 0) or 0)},
-        "extra": {
-            "best_model": (result.best or {}).get("model_name") if hasattr(result, "best") else None,
-            "task_type": (result.best or {}).get("task_type") if hasattr(result, "best") else None,
-            "metric": (result.best or {}).get("metric") if hasattr(result, "best") else None,
-        },
+        "extra": extra,
     }
 
 
