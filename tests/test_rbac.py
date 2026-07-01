@@ -8,6 +8,10 @@ Two layers:
 No nirs4all needed — same as the rest of the API suite.
 """
 
+import json
+import time
+
+import anyio
 import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
@@ -95,6 +99,7 @@ EXECUTOR = "e"
 EXECUTOR_2 = "x"
 VIEWER = "v"
 ADMIN = "a"
+SUBMIT_ONLY = "u"
 
 
 def _rbac_app(tmp_path):
@@ -106,6 +111,7 @@ def _rbac_app(tmp_path):
             Principal.from_roles("worker2", EXECUTOR_2, ["executor"]),
             Principal.from_roles("dash", VIEWER, ["viewer"]),
             Principal.from_roles("ops", ADMIN, ["admin"]),
+            Principal(name="uploadbot", token=SUBMIT_ONLY, rights=frozenset({Right.SUBMIT})),
         ],
     )
     return create_app(config)
@@ -147,6 +153,45 @@ def _dag_job():
 
 def _worker_body():
     return {"slots_total": 1, "version": {"packages": {"nirs4all": "0.9.1"}}}
+
+
+def _upload_input_artifact(client, token, payload=b"artifact payload"):
+    return client.post(
+        "/v1/artifacts",
+        files={"file": ("input.bin", payload, "application/octet-stream")},
+        headers=_hdr(token),
+    )
+
+
+def _receive_ws_json_matching(ws, predicate, *, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    last_payload = None
+    while time.monotonic() < deadline:
+        try:
+            message = ws.portal.call(ws._send_rx.receive_nowait)
+        except anyio.WouldBlock:
+            time.sleep(0.01)
+            continue
+        ws._raise_on_close(message)
+        payload = json.loads(message["text"] if "text" in message else message["bytes"].decode("utf-8"))
+        last_payload = payload
+        if predicate(payload):
+            return payload
+    raise AssertionError(f"timed out waiting for websocket payload; last={last_payload!r}")
+
+
+def _wait_for_event_subscriber(client, *, job_id=None, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        broker = client.app.state.broker
+        if job_id is None:
+            if broker._global:
+                return
+        elif broker._subscribers.get(job_id):
+            return
+        time.sleep(0.01)
+    target = "global feed" if job_id is None else f"job {job_id}"
+    raise AssertionError(f"timed out waiting for websocket subscriber on {target}")
 
 
 @pytest.fixture
@@ -199,6 +244,39 @@ def test_admin_can_do_everything(rbac_client):
     assert rbac_client.get(f"/v1/jobs/{job_id}", headers=_hdr(ADMIN)).status_code == 200
     assert rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(ADMIN)).status_code == 200
     assert rbac_client.post(f"/v1/jobs/{job_id}/cancel", headers=_hdr(ADMIN)).status_code == 200
+
+
+def test_input_artifact_upload_requires_submit(rbac_client):
+    assert _upload_input_artifact(rbac_client, VIEWER).status_code == 403
+    assert _upload_input_artifact(rbac_client, EXECUTOR).status_code == 403
+
+    submit_only = _upload_input_artifact(rbac_client, SUBMIT_ONLY)
+    assert submit_only.status_code == 200
+    assert submit_only.json()["artifact_id"]
+
+    submitter = _upload_input_artifact(rbac_client, SUBMITTER)
+    assert submitter.status_code == 200
+    assert submitter.json()["artifact_id"]
+
+    admin = _upload_input_artifact(rbac_client, ADMIN)
+    assert admin.status_code == 200
+    assert admin.json()["artifact_id"]
+
+
+def test_artifact_download_requires_read_after_upload(rbac_client):
+    payload = b"dataset bytes"
+    artifact_id = _upload_input_artifact(rbac_client, SUBMITTER, payload=payload).json()["artifact_id"]
+
+    for token in (VIEWER, EXECUTOR, SUBMITTER):
+        downloaded = rbac_client.get(f"/v1/artifacts/{artifact_id}", headers=_hdr(token))
+        assert downloaded.status_code == 200
+        assert downloaded.content == payload
+
+    readless = rbac_client.get(f"/v1/artifacts/{artifact_id}", headers=_hdr(SUBMIT_ONLY))
+    assert readless.status_code == 403
+    assert "read" in readless.json()["detail"]
+    assert rbac_client.get(f"/v1/artifacts/{artifact_id}", headers=_hdr("n")).status_code == 401
+    assert rbac_client.get(f"/v1/artifacts/{artifact_id}").status_code == 401
 
 
 def test_register_echoes_granted_rights(rbac_client):
@@ -430,17 +508,36 @@ def test_ws_stream_requires_read(tmp_path):
     with TestClient(_rbac_app(tmp_path)) as c:
         # A viewer credential can stream the global feed.
         with c.websocket_connect(f"/v1/events/stream?token={VIEWER}") as ws:
+            _wait_for_event_subscriber(c)
             c.post("/v1/jobs", json=_job(), headers=_hdr(ADMIN)).raise_for_status()
-            seen = False
-            for _ in range(20):
-                if ws.receive_json().get("type") == "job_submitted":
-                    seen = True
-                    break
-            assert seen
+            _receive_ws_json_matching(ws, lambda msg: msg.get("type") == "job_submitted")
         # An unknown token is rejected before the socket is accepted.
-        with pytest.raises(WebSocketDisconnect):
-            with c.websocket_connect("/v1/events/stream?token=nope"):
-                pass
+        for token in ("n", SUBMIT_ONLY):
+            with pytest.raises(WebSocketDisconnect):
+                with c.websocket_connect(f"/v1/events/stream?token={token}"):
+                    pass
+
+
+def test_job_specific_ws_stream_requires_read(tmp_path):
+    with TestClient(_rbac_app(tmp_path)) as c:
+        job = c.post("/v1/jobs", json=_job(), headers=_hdr(ADMIN)).json()
+
+        with c.websocket_connect(f"/v1/jobs/{job['id']}/events/stream?token={VIEWER}") as ws:
+            _receive_ws_json_matching(
+                ws,
+                lambda msg: msg.get("type") == "job_submitted" and msg.get("job_id") == job["id"],
+            )
+            _wait_for_event_subscriber(c, job_id=job["id"])
+            c.post(f"/v1/jobs/{job['id']}/cancel", headers=_hdr(ADMIN)).raise_for_status()
+            _receive_ws_json_matching(
+                ws,
+                lambda msg: msg.get("type") == "job_cancel_requested" and msg.get("job_id") == job["id"],
+            )
+
+        for token in ("n", SUBMIT_ONLY):
+            with pytest.raises(WebSocketDisconnect):
+                with c.websocket_connect(f"/v1/jobs/{job['id']}/events/stream?token={token}"):
+                    pass
 
 
 def test_single_token_is_admin_equivalent(tmp_path):
