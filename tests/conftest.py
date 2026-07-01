@@ -29,6 +29,38 @@ VIEWER_TOKEN = "v"
 ADMIN_TOKEN = "a"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-release-smoke",
+        action="store_true",
+        default=False,
+        help="Run the installed-wheel release smoke test during normal collection.",
+    )
+
+
+def _release_smoke_selected_explicitly(config: pytest.Config) -> bool:
+    for raw_arg in config.args:
+        path = raw_arg.split("::", 1)[0]
+        if path.endswith("tests/test_release_smoke.py") or path.endswith("test_release_smoke.py"):
+            return True
+    return False
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--run-release-smoke") or _release_smoke_selected_explicitly(config):
+        return
+    keep: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        if "release_smoke" in item.keywords:
+            deselected.append(item)
+        else:
+            keep.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = keep
+
+
 def _principals() -> list[Principal]:
     return [
         Principal.from_roles("alice", SUBMITTER_TOKEN, ["submitter"]),
