@@ -92,7 +92,8 @@ submitter (SDK/CLI/Studio) ──REST + WS──► serveur (FastAPI + SQLite + 
 ## Tests and validation
 
 ```bash
-pytest -q                                   # 45 unit/API tests without nirs4all + 3 integration tests
+pytest -q                                   # unit/API tests without nirs4all + skipped integration if unavailable
+pytest -q tests/test_release_smoke.py       # wheel + installed CLI/server/worker smoke, no nirs4all
 python scripts/validation.py                # end-to-end harness on nirs4all-data (8/8)
 ```
 
