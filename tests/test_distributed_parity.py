@@ -17,6 +17,7 @@ import pytest
 from nirs4all_cluster.client import ClusterClient
 from nirs4all_cluster.client_worker import WorkerClient
 from nirs4all_cluster.schemas import RunMetrics, TaskPayload, TaskResult
+from nirs4all_cluster.versioning import fingerprint_obj
 from nirs4all_cluster.worker.executor import ExecutionResult, execute_task
 from nirs4all_cluster.worker.materialize import build_runner_spec
 
@@ -93,32 +94,217 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
     assert job.aggregate.best_model_artifact_id == result.artifacts["model"]
 
 
+def test_inline_dag_matrix_preserves_local_result_semantics(cluster, tmp_path, monkeypatch):
+    """A DAG-shaped inline pipeline keeps local semantics through server scheduling."""
+    _install_fake_nirs4all(tmp_path / "fake-lib", monkeypatch)
+    dag_pipeline = {
+        "pipeline": [
+            {
+                "id": "standardize",
+                "class": "sklearn.preprocessing.StandardScaler",
+                "params": {"with_mean": True},
+            },
+            {
+                "id": "branch_snv",
+                "class": "nirs4all.preprocessing.SNV",
+                "after": ["standardize"],
+                "params": {"scale": 1.2},
+            },
+            {
+                "id": "branch_derivative",
+                "class": "nirs4all.preprocessing.SavitzkyGolay",
+                "after": ["standardize"],
+                "params": {"window": 7},
+            },
+            {
+                "id": "pls_cv",
+                "class": "sklearn.cross_decomposition.PLSRegression",
+                "after": ["branch_snv", "branch_derivative"],
+                "params": {"n_components": 4},
+            },
+        ],
+        "dagml": {
+            "nodes": [
+                {"id": "source", "op": "DATASET", "deps": []},
+                {"id": "standardize", "op": "PREPROCESS", "deps": ["source"]},
+                {"id": "branch_snv", "op": "PREPROCESS", "deps": ["standardize"], "params": {"scale": 1.2}},
+                {"id": "branch_derivative", "op": "PREPROCESS", "deps": ["standardize"], "params": {"window": 7}},
+                {
+                    "id": "pls_cv",
+                    "op": "FIT_CV",
+                    "deps": ["branch_snv", "branch_derivative"],
+                    "params": {"n_components": 4},
+                },
+                {"id": "select", "op": "SELECT", "deps": ["pls_cv"]},
+                {"id": "refit", "op": "REFIT", "deps": ["select"], "params": {"enabled": True}},
+            ],
+            "rank_metric": "best_rmse",
+        },
+    }
+    pipeline_file = tmp_path / "dag-pipeline.json"
+    pipeline_file.write_text(json.dumps(dag_pipeline, sort_keys=True), encoding="utf-8")
+    datasets = [
+        _dataset(tmp_path, "leaf-low-noise", samples=32, baseline_rmse=0.18, target_shift=1.5),
+        _dataset(tmp_path, "leaf-high-noise", samples=32, baseline_rmse=0.31, target_shift=3.0),
+    ]
+
+    expected: dict[str, dict[str, Any]] = {}
+    expected_received: dict[str, dict[str, Any]] = {}
+    for dataset in datasets:
+        local = execute_task(
+            {
+                "pipeline": {"mode": "path", "path": str(pipeline_file)},
+                "dataset": {"mode": "path", "path": str(dataset)},
+                "params": {"random_state": 11, "refit": True, "dag_scale": 2, "inner_n_jobs": 2},
+                "outputs": {"export_best_model": True, "keep_task_workspace": False},
+            },
+            tmp_path / f"local-{dataset.name}",
+            poll_interval=0.01,
+            timeout=10,
+        )
+        assert local.returncode == 0, local.result
+        expected[dataset.name] = _normalize_execution_result(local)
+        expected_received[dataset.name] = _received_run_args(local)
+
+    by_dataset: dict[str, dict[str, Any]] = {}
+    with (
+        ClusterClient(cluster.base_url, token=cluster.submitter, timeout=10) as submitter,
+        WorkerClient(cluster.base_url, token=cluster.executor, timeout=10) as worker,
+    ):
+        job = submitter.submit_nirs4all_run(
+            pipeline={"kind": "inline_json", "inline": dag_pipeline},
+            datasets=[{"kind": "shared_path", "path": str(dataset), "name": dataset.name} for dataset in datasets],
+            params={"random_state": 11, "refit": True, "dag_scale": 2},
+            n_jobs=2,
+            name="real-dag-parity",
+            outputs={"export_best_model": True, "keep_task_workspace": False},
+        )
+        assert job.aggregate.num_tasks == 2
+        worker.register(
+            slots_total=1,
+            version={"packages": {"nirs4all": "fake-parity-1"}},
+            name="dag-parity-worker",
+        )
+
+        for index in range(2):
+            task = worker.lease()
+            assert task is not None
+            assert task.pipeline.kind == "inline_json"
+            assert task.pipeline.expected_fingerprint == fingerprint_obj(dag_pipeline)
+            worker.start_task(task.task_id)
+            spec = build_runner_spec(task, tmp_path / f"distributed-{index}", worker.download_artifact)
+            assert spec["pipeline_fingerprint"] == fingerprint_obj(dag_pipeline)
+            distributed = execute_task(spec, tmp_path / f"distributed-{index}", poll_interval=0.01, timeout=10)
+            assert distributed.returncode == 0, distributed.result
+
+            label = task.dataset.label()
+            received = _received_run_args(distributed)
+            assert received["pipeline_digest"] == expected_received[label]["pipeline_digest"]
+            assert received["dag_order"] == expected_received[label]["dag_order"]
+            assert received["dataset"] == expected_received[label]["dataset"]
+            assert received["n_jobs"] == expected_received[label]["n_jobs"]
+            assert received["params"] == expected_received[label]["params"]
+
+            _complete_from_execution(worker, task, distributed, spec["pipeline_fingerprint"])
+            by_dataset[label] = {
+                "task_id": task.task_id,
+                "result": _normalize_execution_result(distributed),
+            }
+
+        assert worker.lease() is None
+        job = submitter.wait(job.id, poll=0.05, timeout=10)
+        assert job.status.value == "succeeded", job.aggregate.errors
+        task_views = submitter.get_tasks(job.id)
+
+    assert set(by_dataset) == {dataset.name for dataset in datasets}
+    for label, execution in by_dataset.items():
+        assert execution["result"] == expected[label]
+        assert execution["result"]["extra"]["dag_trace"]["terminal"] == "refit"
+
+    tasks_by_label = {view.dataset_label: view for view in task_views}
+    assert set(tasks_by_label) == set(by_dataset)
+    for label, view in tasks_by_label.items():
+        assert view.result is not None
+        assert _normalize_task_result(view.result) == expected[label]
+        assert view.result.pipeline_fingerprint == fingerprint_obj(dag_pipeline)
+
+    expected_ranking = sorted(
+        [
+            {
+                "task_id": by_dataset[label]["task_id"],
+                "dataset": label,
+                "pipeline": "inline_json",
+                "best_rmse": expected[label]["metrics"]["best_rmse"],
+                "metrics": expected[label]["metrics"],
+            }
+            for label in by_dataset
+        ],
+        key=lambda row: row["best_rmse"],
+    )
+    assert job.aggregate.num_tasks == 2
+    assert job.aggregate.num_succeeded == 2
+    assert job.aggregate.ranking == expected_ranking
+    assert job.aggregate.best_metric == pytest.approx(expected_ranking[0]["best_rmse"], abs=1e-12)
+    assert job.aggregate.best_task_id == expected_ranking[0]["task_id"]
+    best_result = tasks_by_label[expected_ranking[0]["dataset"]].result
+    assert best_result is not None
+    assert job.aggregate.best_model_artifact_id == best_result.artifacts["model"]
+
+
+def _dataset(tmp_path: Path, name: str, *, samples: int, baseline_rmse: float, target_shift: float) -> Path:
+    dataset = tmp_path / name
+    dataset.mkdir()
+    (dataset / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "samples": samples,
+                "baseline_rmse": baseline_rmse,
+                "target_shift": target_shift,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return dataset
+
+
 def _install_fake_nirs4all(fake_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_dir.mkdir()
     (fake_dir / "nirs4all.py").write_text(
-        '''
+        """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+
+import yaml
 
 __version__ = "fake-parity-1"
 
 
 class _RunResult:
-    best_score = 0.8125
-    best_rmse = 0.123456
-    best_r2 = 0.987654
-    best_mae = 0.111111
-    best_accuracy = None
-    num_predictions = 7
-    best = {"model_name": "FakePLS", "task_type": "regression", "metric": "best_rmse"}
-
-    def __init__(self, workspace_path: str) -> None:
+    def __init__(self, workspace_path: str, metrics: dict[str, float | None], counts: dict[str, int], extra: dict) -> None:
         self._workspace_path = Path(workspace_path)
+        self.best_score = metrics["best_score"]
+        self.best_rmse = metrics["best_rmse"]
+        self.best_r2 = metrics["best_r2"]
+        self.best_mae = metrics["best_mae"]
+        self.best_accuracy = metrics["best_accuracy"]
+        self.num_predictions = counts["num_predictions"]
+        self.extra = extra
+        self.best = {
+            "model_name": f"FakeDAGPLS:{extra['dag_trace']['terminal']}",
+            "task_type": "regression",
+            "metric": "best_rmse",
+        }
 
     def export(self, path: str) -> None:
-        Path(path).write_text("FAKE-MODEL\\n", encoding="utf-8")
+        Path(path).write_text(
+            json.dumps({"metrics": self.extra["metrics"], "dag": self.extra["dag_trace"]}, sort_keys=True),
+            encoding="utf-8",
+        )
 
     def close(self) -> None:
         (self._workspace_path / "closed.txt").write_text("closed\\n", encoding="utf-8")
@@ -127,6 +313,17 @@ class _RunResult:
 def run(*, pipeline: str, dataset: str, workspace_path: str, n_jobs: int = 1, **params: object) -> _RunResult:
     workspace = Path(workspace_path)
     workspace.mkdir(parents=True, exist_ok=True)
+    pipeline_doc = _load_pipeline_doc(Path(pipeline))
+    dataset_info = _load_dataset_info(Path(dataset))
+    dag_trace = _evaluate_dag(pipeline_doc, dataset_info, params, n_jobs)
+    metrics = _metrics(dataset_info, dag_trace, params, n_jobs)
+    counts = {"num_predictions": int(dataset_info.get("samples", 7))}
+    extra = {
+        "dataset_name": dataset_info["name"],
+        "pipeline_digest": _digest(pipeline_doc),
+        "dag_trace": dag_trace,
+        "metrics": metrics,
+    }
     (workspace / "received.json").write_text(
         json.dumps(
             {
@@ -134,13 +331,116 @@ def run(*, pipeline: str, dataset: str, workspace_path: str, n_jobs: int = 1, **
                 "dataset": dataset,
                 "n_jobs": n_jobs,
                 "params": params,
+                "pipeline_digest": extra["pipeline_digest"],
+                "dag_order": dag_trace["order"],
             },
             sort_keys=True,
         ),
         encoding="utf-8",
     )
-    return _RunResult(workspace_path)
-'''.lstrip(),
+    (workspace / "dag_result.json").write_text(json.dumps(extra, sort_keys=True), encoding="utf-8")
+    return _RunResult(workspace_path, metrics, counts, extra)
+
+
+def _load_pipeline_doc(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _load_dataset_info(path: Path) -> dict:
+    manifest = path / "manifest.json"
+    if manifest.exists():
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        data = {}
+    data.setdefault("name", path.name)
+    data.setdefault("samples", 7)
+    data.setdefault("baseline_rmse", 0.123456)
+    data.setdefault("target_shift", 0.0)
+    return data
+
+
+def _digest(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _dag_nodes(pipeline_doc: dict) -> list[dict]:
+    dag = pipeline_doc.get("dagml") or pipeline_doc.get("dag") or {}
+    if dag.get("nodes"):
+        return list(dag["nodes"])
+    steps = pipeline_doc.get("pipeline") or pipeline_doc.get("steps") or []
+    nodes = [{"id": "source", "op": "DATASET", "deps": []}]
+    previous = "source"
+    for index, step in enumerate(steps):
+        node_id = str(step.get("id") or f"step_{index}")
+        deps = step.get("after") or step.get("deps") or [previous]
+        nodes.append(
+            {
+                "id": node_id,
+                "op": step.get("class") or step.get("op") or "STEP",
+                "deps": deps,
+                "params": step.get("params") or {},
+            }
+        )
+        previous = node_id
+    return nodes
+
+
+def _evaluate_dag(pipeline_doc: dict, dataset_info: dict, params: dict, n_jobs: int) -> dict:
+    nodes = {str(node["id"]): node for node in _dag_nodes(pipeline_doc)}
+    pending = dict(nodes)
+    values = {}
+    order = []
+    dataset_base = (
+        float(dataset_info.get("samples", 7)) * 0.01
+        + float(dataset_info.get("baseline_rmse", 0.123456)) * 100
+        + float(dataset_info.get("target_shift", 0.0))
+    )
+    while pending:
+        progressed = False
+        for node_id, node in list(pending.items()):
+            deps = node.get("deps") or []
+            if isinstance(deps, str):
+                deps = [deps]
+            if not all(dep in values for dep in deps):
+                continue
+            op = str(node.get("op") or node.get("class") or "STEP").lower()
+            node_params = node.get("params") or {}
+            base = sum(values[dep] for dep in deps) if deps else dataset_base
+            weight = int(_digest({"op": op, "params": node_params})[:4], 16) % 17 + 1
+            value = base + weight + float(params.get("dag_scale", 1))
+            if "scale" in node_params:
+                value *= float(node_params["scale"])
+            if "n_components" in node_params:
+                value -= float(node_params["n_components"]) * 2.5
+            if "select" in op:
+                value *= 0.7
+            if "refit" in op and node_params.get("enabled", True):
+                value -= 5.0
+            value += n_jobs * 0.01
+            values[node_id] = round(value, 6)
+            order.append(node_id)
+            del pending[node_id]
+            progressed = True
+        if not progressed:
+            raise ValueError(f"cycle or unresolved DAG dependencies: {sorted(pending)}")
+    return {"order": order, "terminal": order[-1], "values": values}
+
+
+def _metrics(dataset_info: dict, dag_trace: dict, params: dict, n_jobs: int) -> dict[str, float | None]:
+    terminal_value = float(dag_trace["values"][dag_trace["terminal"]])
+    baseline = float(dataset_info.get("baseline_rmse", 0.123456))
+    adjustment = (abs(terminal_value) % 13) / 1000.0
+    scale = max(float(params.get("dag_scale", 1)), 1.0)
+    best_rmse = round(baseline + adjustment / scale + (n_jobs - 1) * 0.0001, 6)
+    return {
+        "best_score": round(1.0 - best_rmse, 6),
+        "best_rmse": best_rmse,
+        "best_r2": round(1.0 - best_rmse / 2.0, 6),
+        "best_mae": round(best_rmse * 0.8, 6),
+        "best_accuracy": None,
+    }
+""".lstrip(),
         encoding="utf-8",
     )
     repo_root = Path(__file__).resolve().parents[1]
