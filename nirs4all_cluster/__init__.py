@@ -10,6 +10,37 @@ but never reimplements ``nirs4all`` logic (the worker imports it lazily).
 
 __version__ = "0.1.1"
 
-from .client import ClusterClient
+from .client import ClusterClient, ServerInfo
+from .client_errors import (
+    ClusterAuthError,
+    ClusterConflictError,
+    ClusterConnectionError,
+    ClusterError,
+    ClusterNotFoundError,
+    ClusterPayloadTooLargeError,
+    ClusterPermissionError,
+    ClusterRequestError,
+    ClusterServerError,
+    ClusterValidationError,
+    ClusterVersionError,
+)
+from .client_worker import WorkerClient
 
-__all__ = ["ClusterClient", "__version__"]
+__all__ = [
+    "ClusterClient",
+    "ServerInfo",
+    "WorkerClient",
+    # Typed, rights-respecting errors (see client_errors).
+    "ClusterError",
+    "ClusterConnectionError",
+    "ClusterAuthError",
+    "ClusterPermissionError",
+    "ClusterNotFoundError",
+    "ClusterConflictError",
+    "ClusterPayloadTooLargeError",
+    "ClusterValidationError",
+    "ClusterRequestError",
+    "ClusterServerError",
+    "ClusterVersionError",
+    "__version__",
+]

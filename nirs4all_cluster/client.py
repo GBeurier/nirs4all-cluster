@@ -1,19 +1,28 @@
-"""``ClusterClient`` — the thin Python SDK.
+"""``ClusterClient`` — the thin submitter / inspection Python SDK.
 
-It speaks the server's REST API and nothing more; it never imports nirs4all and
-never reimplements pipeline/dataset logic. Friendly helpers turn plain strings
+It speaks the server's REST client API and nothing more; it never imports nirs4all
+and never reimplements pipeline/dataset logic. Friendly helpers turn plain strings
 and dicts into the wire schema.
+
+Every call is **rights-respecting**: a request the credential is not allowed to make
+raises a typed error from :mod:`nirs4all_cluster.client_errors` (``401`` →
+:class:`ClusterAuthError`, ``403`` → :class:`ClusterPermissionError` carrying the
+missing rights) instead of an opaque HTTP error, so core / Studio / CLI can react to
+the RBAC verdict. The executor half (worker registration + task lifecycle) lives in
+:class:`nirs4all_cluster.client_worker.WorkerClient`.
 """
 
 from __future__ import annotations
 
-import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from .client_errors import ClusterConnectionError, raise_for_response
+from .client_transport import make_http_client, request
 from .schemas import (
     ClusterStats,
     DatasetRef,
@@ -23,23 +32,26 @@ from .schemas import (
     PipelineRef,
     TaskView,
 )
-from .versioning import (
-    API_VERSION,
-    CLUSTER_VERSION,
-    H_API,
-    H_VERSION,
-    ClusterVersionError,
-    fingerprint_obj,
-    is_divergent,
-    request_headers,
-)
-
-logger = logging.getLogger("nirs4all_cluster.client")
+from .versioning import fingerprint_obj, is_incompatible
 
 PipelineInput = PipelineRef | dict | str
 DatasetInput = DatasetRef | dict | str
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
+
+
+@dataclass(frozen=True)
+class ServerInfo:
+    """What :meth:`ClusterClient.server_info` learned from the ``/version`` handshake.
+
+    ``compatible`` is the client's verdict on the server's protocol major: ``True``
+    means the two speak the same wire contract (``api_version == API_VERSION``).
+    """
+
+    service: str
+    version: str
+    api_version: int
+    compatible: bool
 
 
 def _as_pipeline(value: PipelineInput) -> PipelineRef:
@@ -66,32 +78,19 @@ def _as_dataset(value: DatasetInput) -> DatasetRef:
 
 
 class ClusterClient:
-    def __init__(self, base_url: str, *, token: str | None = None, timeout: float = 60.0):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        timeout: float = 60.0,
+        transport: httpx.BaseTransport | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self._warned_servers: set[str | None] = set()
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        headers.update(request_headers("client"))
-        self._http = httpx.Client(
-            base_url=self.base_url,
-            headers=headers,
-            timeout=timeout,
-            event_hooks={"response": [self._on_response]},
+        self._http = make_http_client(
+            self.base_url, token=token, role="client", timeout=timeout, transport=transport
         )
-
-    def _on_response(self, response: httpx.Response) -> None:
-        """httpx hook: warn once on server version drift; raise on protocol incompatibility."""
-        server_version = response.headers.get(H_VERSION)
-        if is_divergent(server_version) and server_version not in self._warned_servers:
-            self._warned_servers.add(server_version)
-            logger.warning(
-                "server runs nirs4all-cluster %s; client runs %s (compatible)", server_version, CLUSTER_VERSION
-            )
-        if response.status_code == 426:
-            raise ClusterVersionError(
-                f"server rejected client as protocol-incompatible "
-                f"(server api={response.headers.get(H_API)}, client api={API_VERSION})"
-            )
 
     def close(self) -> None:
         self._http.close()
@@ -103,12 +102,33 @@ class ClusterClient:
         self.close()
 
     # ------------------------------------------------------------------ #
+    # Handshake
+    # ------------------------------------------------------------------ #
+    def server_info(self) -> ServerInfo:
+        """Probe ``GET /version`` for reachability + protocol compatibility.
+
+        Call it once at startup to fail fast on an unreachable server
+        (:class:`ClusterConnectionError`) or an incompatible protocol major
+        (``compatible=False``). ``/version`` is unauthenticated, so it does not
+        validate the credential — the first authenticated call does that, raising
+        :class:`ClusterAuthError` / :class:`ClusterPermissionError` as appropriate.
+        """
+        resp = request(self._http, "GET", "/version")
+        data = resp.json()
+        api_version = int(data.get("api_version", 0))
+        return ServerInfo(
+            service=data.get("service", "nirs4all-cluster"),
+            version=data.get("version", "?"),
+            api_version=api_version,
+            compatible=not is_incompatible(api_version),
+        )
+
+    # ------------------------------------------------------------------ #
     # Submission
     # ------------------------------------------------------------------ #
-    def submit(self, request: JobRequest | dict[str, Any]) -> JobView:
-        req = request if isinstance(request, JobRequest) else JobRequest.model_validate(request)
-        resp = self._http.post("/v1/jobs", json=req.model_dump())
-        resp.raise_for_status()
+    def submit(self, job: JobRequest | dict[str, Any]) -> JobView:
+        req = job if isinstance(job, JobRequest) else JobRequest.model_validate(job)
+        resp = request(self._http, "POST", "/v1/jobs", json=req.model_dump())
         return JobView.model_validate(resp.json())
 
     def submit_run(
@@ -157,20 +177,20 @@ class ClusterClient:
         """Upload an input file (pipeline YAML / dataset zip); returns artifact_id."""
         path = Path(path)
         with open(path, "rb") as fh:
-            resp = self._http.post(
+            resp = request(
+                self._http,
+                "POST",
                 "/v1/artifacts",
                 params={"kind": kind},
                 files={"file": (path.name, fh, "application/octet-stream")},
             )
-        resp.raise_for_status()
         return resp.json()["artifact_id"]
 
     # ------------------------------------------------------------------ #
     # Inspection
     # ------------------------------------------------------------------ #
     def get_job(self, job_id: str) -> JobView:
-        resp = self._http.get(f"/v1/jobs/{job_id}")
-        resp.raise_for_status()
+        resp = request(self._http, "GET", f"/v1/jobs/{job_id}")
         return JobView.model_validate(resp.json())
 
     def list_jobs(
@@ -188,36 +208,30 @@ class ClusterClient:
             params["name"] = name
         if created_before is not None:
             params["created_before"] = created_before
-        resp = self._http.get("/v1/jobs", params=params)
-        resp.raise_for_status()
+        resp = request(self._http, "GET", "/v1/jobs", params=params)
         return [JobView.model_validate(j) for j in resp.json()]
 
     def stats(self) -> ClusterStats:
-        resp = self._http.get("/v1/stats")
-        resp.raise_for_status()
+        resp = request(self._http, "GET", "/v1/stats")
         return ClusterStats.model_validate(resp.json())
 
     def get_tasks(self, job_id: str) -> list[TaskView]:
-        resp = self._http.get(f"/v1/jobs/{job_id}/tasks")
-        resp.raise_for_status()
+        resp = request(self._http, "GET", f"/v1/jobs/{job_id}/tasks")
         return [TaskView.model_validate(t) for t in resp.json()]
 
     def get_events(self, job_id: str, after_id: int = 0, limit: int = 500) -> list[EventView]:
-        resp = self._http.get(f"/v1/jobs/{job_id}/events", params={"after_id": after_id, "limit": limit})
-        resp.raise_for_status()
+        resp = request(self._http, "GET", f"/v1/jobs/{job_id}/events", params={"after_id": after_id, "limit": limit})
         return [EventView.model_validate(e) for e in resp.json()]
 
     def list_workers(self) -> list[dict[str, Any]]:
-        resp = self._http.get("/v1/workers")
-        resp.raise_for_status()
+        resp = request(self._http, "GET", "/v1/workers")
         return resp.json()
 
     # ------------------------------------------------------------------ #
     # Control
     # ------------------------------------------------------------------ #
     def cancel(self, job_id: str) -> JobView:
-        resp = self._http.post(f"/v1/jobs/{job_id}/cancel")
-        resp.raise_for_status()
+        resp = request(self._http, "POST", f"/v1/jobs/{job_id}/cancel")
         return JobView.model_validate(resp.json())
 
     def wait(self, job_id: str, *, poll: float = 2.0, timeout: float | None = None) -> JobView:
@@ -238,18 +252,22 @@ class ClusterClient:
     # Artifacts
     # ------------------------------------------------------------------ #
     def list_artifacts(self, job_id: str) -> list[dict[str, Any]]:
-        resp = self._http.get(f"/v1/jobs/{job_id}/artifacts")
-        resp.raise_for_status()
+        resp = request(self._http, "GET", f"/v1/jobs/{job_id}/artifacts")
         return resp.json()
 
     def download_artifact(self, artifact_id: str, dest: str | Path) -> Path:
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with self._http.stream("GET", f"/v1/artifacts/{artifact_id}") as resp:
-            resp.raise_for_status()
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_bytes():
-                    fh.write(chunk)
+        url = f"/v1/artifacts/{artifact_id}"
+        try:
+            with self._http.stream("GET", url) as resp:
+                if resp.status_code >= 400:
+                    raise_for_response(resp)  # reads + maps to the typed error (e.g. 404/403)
+                with open(dest, "wb") as fh:
+                    for chunk in resp.iter_bytes():
+                        fh.write(chunk)
+        except httpx.TransportError as exc:
+            raise ClusterConnectionError(str(exc), method="GET", url=url) from exc
         return dest
 
     def download_best_model(self, job_id: str, dest: str | Path) -> Path | None:

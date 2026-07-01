@@ -27,6 +27,13 @@ from typing import Any
 import yaml
 
 from .client import ClusterClient
+from .client_errors import (
+    ClusterAuthError,
+    ClusterConnectionError,
+    ClusterError,
+    ClusterPermissionError,
+    ClusterVersionError,
+)
 
 
 def _parse_labels(raw: str | None) -> dict[str, str]:
@@ -368,7 +375,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ClusterPermissionError as exc:
+        missing = ", ".join(sorted(exc.missing_rights)) or "?"
+        who = f" (as {exc.principal})" if exc.principal else ""
+        print(f"[n4cluster] forbidden{who}: your credential lacks the right(s): {missing}", file=sys.stderr)
+        return 3
+    except ClusterAuthError:
+        print("[n4cluster] unauthorized: set a valid --token ${N4CLUSTER_TOKEN} $N4CLUSTER_TOKEN", file=sys.stderr)
+        return 3
+    except ClusterConnectionError as exc:
+        print(f"[n4cluster] cannot reach server: {exc.message}", file=sys.stderr)
+        return 4
+    except ClusterVersionError as exc:
+        print(f"[n4cluster] {exc}", file=sys.stderr)
+        return 2
+    except ClusterError as exc:
+        print(f"[n4cluster] error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
