@@ -146,6 +146,14 @@ def _require_task_worker_principal(db: Database, task_id: str, principal: Princi
     return row
 
 
+def _require_task_reporter(db: Database, task_id: str, worker_id: str, principal: Principal) -> Any:
+    """Return a task row only when ``worker_id`` is the task's assigned worker."""
+    row = _require_task_worker_principal(db, task_id, principal)
+    if row["worker_id"] != worker_id:
+        raise HTTPException(status_code=409, detail="task leased by another worker")
+    return row
+
+
 def _server_attested_job_request(req: JobRequest, principal: Principal) -> JobRequest:
     """Attach credential-derived submit metadata before storing a client job."""
     scheduler = req.scheduler or req.inferred_scheduler_contract()
@@ -644,10 +652,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         db = db_of(request)
         broker = broker_of(request)
         principal: Principal = request.state.principal
-        _require_worker_principal(db, worker_id, principal)
-        row = db.get_task(task_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="task not found")
+        row = _require_task_reporter(db, task_id, worker_id, principal)
         result = result.model_copy(
             update={
                 "provenance": ResultProvenance(
@@ -667,6 +672,15 @@ def create_app(config: ServerConfig) -> FastAPI:
         )
         if cancelling:
             db.cancel_running_task(task_id, worker_id)
+            broker.emit(
+                level="warning",
+                type="task_cancelled",
+                message=f"task {task_id} cancelled",
+                job_id=row["job_id"],
+                task_id=task_id,
+                worker_id=worker_id,
+                data={"reported_status": "succeeded"},
+            )
         else:
             try:
                 db.complete_task(task_id, worker_id, result.model_dump())
@@ -692,15 +706,15 @@ def create_app(config: ServerConfig) -> FastAPI:
                     worker_id=worker_id,
                     data={"expected": expected, "actual": result.pipeline_fingerprint},
                 )
-        broker.emit(
-            level="info",
-            type="task_completed",
-            message=f"task {task_id} completed",
-            job_id=row["job_id"],
-            task_id=task_id,
-            worker_id=worker_id,
-            data={"metrics": _jsonable(result.metrics.model_dump())},
-        )
+            broker.emit(
+                level="info",
+                type="task_completed",
+                message=f"task {task_id} completed",
+                job_id=row["job_id"],
+                task_id=task_id,
+                worker_id=worker_id,
+                data={"metrics": _jsonable(result.metrics.model_dump())},
+            )
         _finalize_job(db, broker, row["job_id"])
         return {"ok": True}
 
@@ -709,10 +723,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         db = db_of(request)
         broker = broker_of(request)
         principal: Principal = request.state.principal
-        _require_worker_principal(db, worker_id, principal)
-        row = db.get_task(task_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="task not found")
+        row = _require_task_reporter(db, task_id, worker_id, principal)
         job_row = db.get_job(row["job_id"])
         cancelling = job_row is not None and job_row["status"] in (
             JobStatus.CANCELLING.value,
@@ -721,21 +732,30 @@ def create_app(config: ServerConfig) -> FastAPI:
         if cancelling:
             db.cancel_running_task(task_id, worker_id)
             requeued = False
+            broker.emit(
+                level="warning",
+                type="task_cancelled",
+                message=f"task {task_id} cancelled: {failure.error}",
+                job_id=row["job_id"],
+                task_id=task_id,
+                worker_id=worker_id,
+                data={"reported_status": "failed", "retriable": failure.retriable},
+            )
         else:
             try:
                 updated = db.fail_task(task_id, worker_id, failure.error, retriable=failure.retriable)
             except PermissionError:
                 return {"ok": True, "ignored": True, "requeued": False}  # stale report
             requeued = updated["status"] == TaskStatus.QUEUED.value
-        broker.emit(
-            level="error",
-            type="task_failed",
-            message=f"task {task_id} failed: {failure.error}",
-            job_id=row["job_id"],
-            task_id=task_id,
-            worker_id=worker_id,
-            data={"retriable": failure.retriable, "requeued": requeued},
-        )
+            broker.emit(
+                level="error",
+                type="task_failed",
+                message=f"task {task_id} failed: {failure.error}",
+                job_id=row["job_id"],
+                task_id=task_id,
+                worker_id=worker_id,
+                data={"retriable": failure.retriable, "requeued": requeued},
+            )
         _finalize_job(db, broker, row["job_id"])
         return {"ok": True, "requeued": requeued}
 
@@ -812,8 +832,19 @@ async def _reaper_loop(app: FastAPI) -> None:
                     message=f"worker {worker_id} marked dead (no heartbeat)",
                     worker_id=worker_id,
                 )
+            lost = db.reap_tasks_for_workers(dead)
+            for task_id, job_id in lost:
+                broker.emit(
+                    level="warning",
+                    type="task_lost",
+                    message=f"task {task_id} lost with dead worker",
+                    job_id=job_id,
+                    task_id=task_id,
+                )
             affected = db.reap_expired_leases()
             jobs = set()
+            for _task_id, job_id in lost:
+                jobs.add(job_id)
             for task_id, job_id in affected:
                 jobs.add(job_id)
                 broker.emit(

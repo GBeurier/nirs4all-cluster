@@ -12,6 +12,7 @@ import pytest
 from nirs4all_cluster.schemas import (
     DatasetRef,
     JobRequest,
+    JobStatus,
     PipelineRef,
     Requirements,
     TaskStatus,
@@ -190,6 +191,54 @@ def test_slots_not_oversubscribed_after_dead_and_revive(tmp_path):
     db.heartbeat_worker(worker, 60)  # revives to ALIVE
     # Still 1 task in-flight -> must NOT lease a second one.
     assert db.lease_next_task(worker, 60) is None
+
+
+def test_dead_worker_tasks_requeue_without_waiting_for_lease_expiry(tmp_path):
+    db = _make_db(tmp_path)
+    job_id = db.create_job(_job())
+    task_ids = db.create_tasks_for_job(job_id, _job())
+    worker = db.register_worker(WorkerRegister(slots_total=1))
+
+    leased = db.lease_next_task(worker, lease_ttl_s=3600)
+    assert leased is not None
+    db.start_task(leased.task_id, worker)
+
+    dead = db.mark_dead_workers(0)
+    assert worker in dead
+    assert db.reap_tasks_for_workers(dead) == [(task_ids[0], job_id)]
+
+    row = db.get_task(task_ids[0])
+    assert row["status"] == TaskStatus.QUEUED.value
+    assert row["worker_id"] is None
+    assert row["lease_expires_at"] is None
+    assert row["attempt"] == 1
+    assert row["error"] == "worker lost"
+
+    replacement = db.register_worker(WorkerRegister(slots_total=1))
+    retry = db.lease_next_task(replacement, lease_ttl_s=60)
+    assert retry is not None
+    assert retry.task_id == task_ids[0]
+    assert retry.attempt == 2
+    with pytest.raises(PermissionError):
+        db.complete_task(task_ids[0], worker, {"status": "succeeded"})
+
+
+def test_dead_worker_task_cancels_when_job_is_cancelling(tmp_path):
+    db = _make_db(tmp_path)
+    job_id = db.create_job(_job())
+    task_ids = db.create_tasks_for_job(job_id, _job())
+    worker = db.register_worker(WorkerRegister(slots_total=1))
+
+    leased = db.lease_next_task(worker, lease_ttl_s=3600)
+    assert leased is not None
+    db.start_task(leased.task_id, worker)
+    db.set_job_status(job_id, JobStatus.CANCELLING)
+
+    dead = db.mark_dead_workers(0)
+    assert db.reap_tasks_for_workers(dead) == [(task_ids[0], job_id)]
+    row = db.get_task(task_ids[0])
+    assert row["status"] == TaskStatus.CANCELLED.value
+    assert row["worker_id"] is None
 
 
 def test_idempotency_key(tmp_path):

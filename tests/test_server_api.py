@@ -254,6 +254,23 @@ def test_cancel_running_job(client):
     assert job["status"] == "cancelled"
 
 
+def test_cancelled_success_report_emits_cancelled_not_completed(client):
+    job = client.post("/v1/jobs", json=_atomic_job()).json()
+    worker = _register(client)
+    task = _lease(client, worker)
+    client.post(f"/v1/tasks/{task['task_id']}/start", params={"worker_id": worker}).raise_for_status()
+    client.post(f"/v1/jobs/{job['id']}/cancel").raise_for_status()
+
+    _complete(client, worker, task["task_id"], {"best_rmse": 0.2})
+
+    job = client.get(f"/v1/jobs/{job['id']}").json()
+    assert job["status"] == "cancelled"
+    events = client.get(f"/v1/jobs/{job['id']}/events").json()
+    task_events = [event for event in events if event["task_id"] == task["task_id"]]
+    assert any(event["type"] == "task_cancelled" for event in task_events)
+    assert all(event["type"] != "task_completed" for event in task_events)
+
+
 def test_lease_expiry_retry_then_succeed(client):
     job = client.post("/v1/jobs", json=_atomic_job()).json()
     worker = _register(client)

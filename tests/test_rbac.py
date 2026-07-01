@@ -283,6 +283,67 @@ def test_worker_lifecycle_is_bound_to_registering_principal(rbac_client):
     assert rbac_client.get(f"/v1/jobs/{job_id}", headers=_hdr(ADMIN)).json()["status"] == "succeeded"
 
 
+def test_cancelling_task_report_requires_assigned_executor(rbac_client):
+    job_id = rbac_client.post("/v1/jobs", json=_job(), headers=_hdr(ADMIN)).json()["id"]
+    worker1 = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()[
+        "worker_id"
+    ]
+    worker2 = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR_2)).json()[
+        "worker_id"
+    ]
+    leased = rbac_client.post(f"/v1/workers/{worker1}/lease", headers=_hdr(EXECUTOR)).json()["task"]
+    task_id = leased["task_id"]
+    rbac_client.post(f"/v1/tasks/{task_id}/start", params={"worker_id": worker1}, headers=_hdr(EXECUTOR)).raise_for_status()
+    rbac_client.post(f"/v1/jobs/{job_id}/cancel", headers=_hdr(ADMIN)).raise_for_status()
+
+    spoofed_failure = rbac_client.post(
+        f"/v1/tasks/{task_id}/fail",
+        params={"worker_id": worker2},
+        json={"error": "cancelled", "retriable": False},
+        headers=_hdr(EXECUTOR_2),
+    )
+    assert spoofed_failure.status_code == 403
+    spoofed_success = rbac_client.post(
+        f"/v1/tasks/{task_id}/complete",
+        params={"worker_id": worker2},
+        json={"status": "succeeded", "duration_seconds": 0.1, "metrics": {"best_rmse": 0.2}},
+        headers=_hdr(EXECUTOR_2),
+    )
+    assert spoofed_success.status_code == 403
+
+    rbac_client.post(
+        f"/v1/tasks/{task_id}/fail",
+        params={"worker_id": worker1},
+        json={"error": "cancelled", "retriable": False},
+        headers=_hdr(EXECUTOR),
+    ).raise_for_status()
+    assert rbac_client.get(f"/v1/jobs/{job_id}", headers=_hdr(ADMIN)).json()["status"] == "cancelled"
+
+
+def test_dag_job_leases_only_to_capable_executor(rbac_client):
+    req = _dag_job()
+    req["requirements"] = {"labels": {"site": "lab-b"}, "min_gpu_count": 1}
+    rbac_client.post("/v1/jobs", json=req, headers=_hdr(SUBMITTER)).raise_for_status()
+
+    wrong_site = _worker_body()
+    wrong_site.update({"labels": {"site": "lab-a"}, "capabilities": {"gpu_count": 2}})
+    worker_a = rbac_client.post("/v1/workers/register", json=wrong_site, headers=_hdr(EXECUTOR)).json()["worker_id"]
+    assert rbac_client.post(f"/v1/workers/{worker_a}/lease", headers=_hdr(EXECUTOR)).json()["task"] is None
+
+    no_gpu = _worker_body()
+    no_gpu.update({"labels": {"site": "lab-b"}, "capabilities": {"gpu_count": 0}})
+    worker_cpu = rbac_client.post("/v1/workers/register", json=no_gpu, headers=_hdr(EXECUTOR)).json()["worker_id"]
+    assert rbac_client.post(f"/v1/workers/{worker_cpu}/lease", headers=_hdr(EXECUTOR)).json()["task"] is None
+
+    capable = _worker_body()
+    capable.update({"labels": {"site": "lab-b"}, "capabilities": {"gpu_count": 1}})
+    worker_gpu = rbac_client.post("/v1/workers/register", json=capable, headers=_hdr(EXECUTOR)).json()["worker_id"]
+    leased = rbac_client.post(f"/v1/workers/{worker_gpu}/lease", headers=_hdr(EXECUTOR)).json()["task"]
+    assert leased is not None
+    assert leased["scheduler"]["shape"] == "dag_shaped_whole_run"
+    assert leased["assignment"]["executor_principal"] == "worker1"
+
+
 def test_dag_scheduler_contract_records_rights_and_result_provenance(rbac_client):
     submitted = rbac_client.post("/v1/jobs", json=_dag_job(), headers=_hdr(SUBMITTER))
     assert submitted.status_code == 200

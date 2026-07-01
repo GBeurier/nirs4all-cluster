@@ -497,6 +497,37 @@ class Database:
             self._conn.commit()
             return updated
 
+    def _resolve_lost_task(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        error: str,
+    ) -> tuple[str, str]:
+        """Move an in-flight task through LOST to its deterministic next state."""
+        self._set_task_status(conn, row["id"], TaskStatus.LOST, error=error)
+        if row["job_status"] in (JobStatus.CANCELLING.value, JobStatus.CANCELLED.value):
+            self._set_task_status(
+                conn,
+                row["id"],
+                TaskStatus.CANCELLED,
+                worker_id=None,
+                lease_expires_at=None,
+            )
+        elif row["attempt"] < row["max_attempts"]:
+            self._set_task_status(
+                conn,
+                row["id"],
+                TaskStatus.QUEUED,
+                worker_id=None,
+                lease_expires_at=None,
+            )
+        else:
+            self._set_task_status(conn, row["id"], TaskStatus.FAILED, error=f"{error} (max attempts)")
+        if row["worker_id"]:
+            self._sync_slots(row["worker_id"])
+        return row["id"], row["job_id"]
+
     def reap_expired_leases(self) -> list[tuple[str, str]]:
         """Requeue (or fail) tasks whose lease expired.
 
@@ -513,26 +544,35 @@ class Database:
                 (TaskStatus.LEASED.value, TaskStatus.RUNNING.value, now),
             ).fetchall()
             for row in rows:
-                self._set_task_status(self._conn, row["id"], TaskStatus.LOST, error="lease expired")
-                if row["job_status"] in (JobStatus.CANCELLING.value, JobStatus.CANCELLED.value):
-                    self._set_task_status(
-                        self._conn, row["id"], TaskStatus.CANCELLED, worker_id=None, lease_expires_at=None
-                    )
-                elif row["attempt"] < row["max_attempts"]:
-                    self._set_task_status(
-                        self._conn,
-                        row["id"],
-                        TaskStatus.QUEUED,
-                        worker_id=None,
-                        lease_expires_at=None,
-                    )
-                else:
-                    self._set_task_status(
-                        self._conn, row["id"], TaskStatus.FAILED, error="lease expired (max attempts)"
-                    )
-                if row["worker_id"]:
-                    self._sync_slots(row["worker_id"])
-                affected.append((row["id"], row["job_id"]))
+                affected.append(self._resolve_lost_task(self._conn, row, error="lease expired"))
+            if affected:
+                self._conn.commit()
+        return affected
+
+    def reap_tasks_for_workers(self, worker_ids: list[str], *, error: str = "worker lost") -> list[tuple[str, str]]:
+        """Requeue/cancel tasks owned by workers that were declared dead.
+
+        This is the worker-loss counterpart to lease expiry: once the server has
+        deterministically classified a worker as dead, its in-flight tasks are no
+        longer left in limbo until the lease timestamp happens to expire.
+        """
+        if not worker_ids:
+            return []
+        affected: list[tuple[str, str]] = []
+        placeholders = ",".join("?" for _ in worker_ids)
+        params: list[Any] = [
+            *worker_ids,
+            TaskStatus.LEASED.value,
+            TaskStatus.RUNNING.value,
+        ]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT t.*, j.status AS job_status FROM tasks t JOIN jobs j ON j.id = t.job_id "
+                f"WHERE t.worker_id IN ({placeholders}) AND t.status IN (?, ?)",
+                params,
+            ).fetchall()
+            for row in rows:
+                affected.append(self._resolve_lost_task(self._conn, row, error=error))
             if affected:
                 self._conn.commit()
         return affected
@@ -558,14 +598,15 @@ class Database:
             self._conn.commit()
         return running  # caller asks workers to stop these
 
-    def cancel_running_task(self, task_id: str, worker_id: str) -> None:
+    def cancel_running_task(self, task_id: str, worker_id: str) -> sqlite3.Row | None:
         with self._lock:
             row = self.get_task(task_id)
             if row is None or row["worker_id"] != worker_id:
-                return
-            self._set_task_status(self._conn, task_id, TaskStatus.CANCELLED)
+                return None
+            updated = self._set_task_status(self._conn, task_id, TaskStatus.CANCELLED)
             self._sync_slots(worker_id)
             self._conn.commit()
+            return updated
 
     def tasks_for_worker(self, worker_id: str) -> list[str]:
         with self._lock:
@@ -658,10 +699,8 @@ class Database:
     def mark_dead_workers(self, ttl_s: float) -> list[str]:
         """Mark workers silent for > ttl as dead.
 
-        We do NOT touch ``slots_used`` here: the worker's tasks are still
-        in-flight until the reaper requeues them, and slot accounting is derived
-        live from the task table (see ``_in_flight_count``). Zeroing here would
-        let a revived worker oversubscribe.
+        In-flight task recovery is handled by ``reap_tasks_for_workers`` so the
+        state-machine transition remains explicit and testable.
         """
         cutoff = _now() - ttl_s
         with self._lock:
