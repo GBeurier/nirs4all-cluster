@@ -11,6 +11,18 @@ distributed beta runs one whole `nirs4all.run` per task, expects metric parity f
 and explicit matrix jobs, and defers fine-grained DAG/variant/fold/subtree parity until
 core/dag-ml execution-unit and data-provider contracts exist.
 
+The server also persists additive scheduler/rights metadata:
+
+- `scheduler` (`DagSchedulerContract`) records whether the request is atomic, an
+  explicit `pipeline × dataset` matrix, or a DAG-shaped whole-run job. V1 still leases
+  whole `nirs4all.run` tasks; it does not claim fine-grained graph execution.
+- `submission` (`JobSubmissionMetadata`) is overwritten by the server from the
+  authenticated submitter credential (`submit` right).
+- leased `TaskPayload.assignment` records the server-authoritative executor assignment
+  returned to a worker/client holding `execute`.
+- stored `TaskResult.provenance` records the authenticated executor principal, worker id,
+  job id, task id, attempt, and execute rights used to report the result.
+
 ## Pipeline references (`kind`)
 
 - `path` — a pipeline YAML readable on the worker (shared/worker-local filesystem).
@@ -52,6 +64,10 @@ core/dag-ml execution-unit and data-provider contracts exist.
 .. autoclass:: nirs4all_cluster.schemas.Outputs
 .. autoclass:: nirs4all_cluster.schemas.RetryPolicy
 .. autoclass:: nirs4all_cluster.schemas.DistributedRunParity
+.. autoclass:: nirs4all_cluster.schemas.DagSchedulerContract
+.. autoclass:: nirs4all_cluster.schemas.JobSubmissionMetadata
+.. autoclass:: nirs4all_cluster.schemas.TaskAssignmentMetadata
+.. autoclass:: nirs4all_cluster.schemas.ResultProvenance
 .. autoclass:: nirs4all_cluster.schemas.JobView
 .. autoclass:: nirs4all_cluster.schemas.JobAggregate
 .. autoclass:: nirs4all_cluster.schemas.TaskView

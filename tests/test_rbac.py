@@ -121,6 +121,28 @@ def _job():
     }
 
 
+def _dag_job():
+    return {
+        "type": "nirs4all.run",
+        "name": "dag-rights",
+        "pipeline": {
+            "kind": "inline_json",
+            "inline": {
+                "dagml": {
+                    "nodes": [
+                        {"id": "source", "op": "DATASET", "deps": []},
+                        {"id": "preproc", "op": "PREPROCESS", "deps": ["source"]},
+                        {"id": "fit", "op": "FIT_CV", "deps": ["preproc"]},
+                        {"id": "refit", "op": "REFIT", "deps": ["fit"]},
+                    ]
+                }
+            },
+        },
+        "dataset": {"kind": "shared_path", "path": "/a", "name": "A"},
+        "rank_metric": "best_rmse",
+    }
+
+
 def _worker_body():
     return {"slots_total": 1, "version": {"packages": {"nirs4all": "0.9.1"}}}
 
@@ -180,6 +202,81 @@ def test_admin_can_do_everything(rbac_client):
 def test_register_echoes_granted_rights(rbac_client):
     reg = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()
     assert set(reg["rights"]) == {"read", "execute"}
+
+
+def test_dag_scheduler_contract_records_rights_and_result_provenance(rbac_client):
+    submitted = rbac_client.post("/v1/jobs", json=_dag_job(), headers=_hdr(SUBMITTER))
+    assert submitted.status_code == 200
+    job = submitted.json()
+    assert job["submission"]["mode"] == "client_submitted"
+    assert job["submission"]["principal"] == "alice"
+    assert job["submission"]["required_rights"] == ["submit"]
+    assert set(job["submission"]["granted_rights"]) == {"submit", "read", "cancel"}
+    assert job["scheduler"] == {
+        "shape": "dag_shaped_whole_run",
+        "task_granularity": "whole_nirs4all_run",
+        "assignment_mode": "server_leased_executor",
+        "result_provenance": "server_attested_worker_report",
+        "submit_rights_required": ["submit"],
+        "execute_rights_required": ["execute"],
+    }
+
+    reg = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()
+    worker_id = reg["worker_id"]
+    leased = rbac_client.post(f"/v1/workers/{worker_id}/lease", headers=_hdr(EXECUTOR)).json()["task"]
+    assert leased["submission"]["principal"] == "alice"
+    assert leased["scheduler"]["shape"] == "dag_shaped_whole_run"
+    assert leased["assignment"]["mode"] == "server_leased_executor"
+    assert leased["assignment"]["assigned_by"] == "server"
+    assert leased["assignment"]["executor_principal"] == "worker1"
+    assert leased["assignment"]["worker_id"] == worker_id
+    assert leased["assignment"]["required_rights"] == ["execute"]
+    assert set(leased["assignment"]["granted_rights"]) == {"read", "execute"}
+
+    result_body = {
+        "status": "succeeded",
+        "nirs4all_version": "0.9.1",
+        "duration_seconds": 0.5,
+        "metrics": {"best_rmse": 0.12, "best_r2": 0.8},
+        "counts": {"num_predictions": 3},
+        "artifacts": {"model": None, "logs": None, "workspace": None},
+        "extra": {"dag_trace": {"terminal": "refit"}, "stable_field": "preserved"},
+    }
+    denied = rbac_client.post(
+        f"/v1/tasks/{leased['task_id']}/complete",
+        params={"worker_id": worker_id},
+        json=result_body,
+        headers=_hdr(SUBMITTER),
+    )
+    assert denied.status_code == 403
+    assert "execute" in denied.json()["detail"]
+
+    rbac_client.post(
+        f"/v1/tasks/{leased['task_id']}/start", params={"worker_id": worker_id}, headers=_hdr(EXECUTOR)
+    ).raise_for_status()
+    rbac_client.post(
+        f"/v1/tasks/{leased['task_id']}/complete",
+        params={"worker_id": worker_id},
+        json=result_body,
+        headers=_hdr(EXECUTOR),
+    ).raise_for_status()
+
+    task_view = rbac_client.get(f"/v1/jobs/{job['id']}/tasks", headers=_hdr(SUBMITTER)).json()[0]
+    result = task_view["result"]
+    assert result["metrics"]["best_rmse"] == 0.12
+    assert result["extra"] == {"dag_trace": {"terminal": "refit"}, "stable_field": "preserved"}
+    assert result["provenance"]["source"] == "worker_report"
+    assert result["provenance"]["reported_by_principal"] == "worker1"
+    assert result["provenance"]["worker_id"] == worker_id
+    assert result["provenance"]["job_id"] == job["id"]
+    assert result["provenance"]["task_id"] == leased["task_id"]
+    assert result["provenance"]["attempt"] == 1
+    assert result["provenance"]["required_rights"] == ["execute"]
+    assert set(result["provenance"]["granted_rights"]) == {"read", "execute"}
+
+    finished = rbac_client.get(f"/v1/jobs/{job['id']}", headers=_hdr(SUBMITTER)).json()
+    assert finished["status"] == "succeeded"
+    assert finished["aggregate"]["best_metric"] == 0.12
 
 
 def test_role_header_confers_nothing(rbac_client):

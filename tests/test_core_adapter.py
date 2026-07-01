@@ -50,6 +50,10 @@ def test_build_nirs4all_run_request_records_parity_contract(tmp_path):
     assert req.parity.omitted_local_kwargs == ["workspace_path"]
     assert req.parity.preserved_params == ["random_state", "refit"]
     assert any("fold-level distribution" in item for item in req.parity.deferred)
+    assert req.scheduler is not None
+    assert req.scheduler.shape == "pipeline_dataset_matrix"
+    assert req.scheduler.assignment_mode == "server_leased_executor"
+    assert req.scheduler.result_provenance == "server_attested_worker_report"
 
 
 def test_build_nirs4all_run_request_rejects_conflicting_parallelism():
@@ -90,6 +94,8 @@ def test_submit_nirs4all_run_uses_adapter_contract(monkeypatch):
     assert captured[0].params == {"random_state": 7, "inner_n_jobs": 4}
     assert captured[0].parity is not None
     assert captured[0].parity.scope == "atomic"
+    assert captured[0].scheduler is not None
+    assert captured[0].scheduler.shape == "atomic"
 
 
 def test_adapter_contract_survives_server_persistence_and_decomposition(tmp_path):

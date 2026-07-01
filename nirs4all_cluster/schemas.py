@@ -168,6 +168,74 @@ class DistributedRunParity(BaseModel):
     deferred: list[str] = Field(default_factory=list)
 
 
+class JobSubmissionMetadata(BaseModel):
+    """Server-attested provenance for a job accepted through ``POST /v1/jobs``.
+
+    The client may send this field for traceability, but the server overwrites it
+    from the authenticated principal before persisting the request. Rights are
+    therefore credential-derived, not self-declared.
+    """
+
+    mode: Literal["client_submitted"] = "client_submitted"
+    principal: str | None = None
+    required_rights: list[str] = Field(default_factory=lambda: ["submit"])
+    granted_rights: list[str] = Field(default_factory=list)
+
+
+class DagSchedulerContract(BaseModel):
+    """Additive scheduler contract for DAG-shaped jobs.
+
+    Cluster V1 still schedules whole ``nirs4all.run`` calls. This metadata makes
+    the rights/result contract explicit for DAG-looking payloads without claiming
+    fine-grained graph execution.
+    """
+
+    shape: Literal["atomic", "pipeline_dataset_matrix", "dag_shaped_whole_run"] = "atomic"
+    task_granularity: Literal["whole_nirs4all_run"] = "whole_nirs4all_run"
+    assignment_mode: Literal["server_leased_executor"] = "server_leased_executor"
+    result_provenance: Literal["server_attested_worker_report"] = "server_attested_worker_report"
+    submit_rights_required: list[str] = Field(default_factory=lambda: ["submit"])
+    execute_rights_required: list[str] = Field(default_factory=lambda: ["execute"])
+
+
+class TaskAssignmentMetadata(BaseModel):
+    """Server-requested execution metadata returned on a worker lease."""
+
+    mode: Literal["server_leased_executor"] = "server_leased_executor"
+    assigned_by: Literal["server"] = "server"
+    executor_principal: str | None = None
+    worker_id: str | None = None
+    required_rights: list[str] = Field(default_factory=lambda: ["execute"])
+    granted_rights: list[str] = Field(default_factory=list)
+
+
+class ResultProvenance(BaseModel):
+    """Server-attested provenance attached to a stored task result."""
+
+    source: Literal["worker_report"] = "worker_report"
+    reported_by_principal: str | None = None
+    worker_id: str | None = None
+    job_id: str | None = None
+    task_id: str | None = None
+    attempt: int | None = None
+    assignment_mode: Literal["server_leased_executor"] = "server_leased_executor"
+    required_rights: list[str] = Field(default_factory=lambda: ["execute"])
+    granted_rights: list[str] = Field(default_factory=list)
+
+
+def _pipeline_ref_looks_dag(ref: PipelineRef) -> bool:
+    """Best-effort DAG shape detection for traceability metadata only."""
+    if ref.kind != "inline_json" or not isinstance(ref.inline, dict):
+        return False
+    doc = ref.inline
+    if isinstance(doc.get("dagml"), dict) or isinstance(doc.get("dag"), dict):
+        return True
+    steps = doc.get("pipeline") or doc.get("steps") or []
+    if not isinstance(steps, list):
+        return False
+    return any(isinstance(step, dict) and ("after" in step or "deps" in step) for step in steps)
+
+
 # --------------------------------------------------------------------------- #
 # Job submission (client -> server)
 # --------------------------------------------------------------------------- #
@@ -204,6 +272,11 @@ class JobRequest(BaseModel):
     # the explicit pipeline/dataset/requirements fields above.
     parity: DistributedRunParity | None = None
 
+    # Additive DAG scheduler/rights metadata. The server fills/normalizes this
+    # before persistence, so rights fields remain server-attested.
+    scheduler: DagSchedulerContract | None = None
+    submission: JobSubmissionMetadata | None = None
+
     idempotency_key: str | None = None
 
     @model_validator(mode="after")
@@ -226,6 +299,17 @@ class JobRequest(BaseModel):
 
     def pipeline_list_has_python(self) -> bool:
         return any(p.kind == "python_entrypoint" for p in self.pipeline_list())
+
+    def inferred_scheduler_contract(self) -> DagSchedulerContract:
+        """Infer the additive scheduler contract from the validated request shape."""
+        shape: Literal["atomic", "pipeline_dataset_matrix", "dag_shaped_whole_run"]
+        if any(_pipeline_ref_looks_dag(pipeline) for pipeline in self.pipeline_list()):
+            shape = "dag_shaped_whole_run"
+        elif len(self.pipeline_list()) * len(self.dataset_list()) > 1:
+            shape = "pipeline_dataset_matrix"
+        else:
+            shape = "atomic"
+        return DagSchedulerContract(shape=shape)
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +351,9 @@ class TaskPayload(BaseModel):
     dataset: DatasetRef
     params: dict[str, Any] = Field(default_factory=dict)
     outputs: Outputs = Field(default_factory=Outputs)
+    scheduler: DagSchedulerContract | None = None
+    submission: JobSubmissionMetadata | None = None
+    assignment: TaskAssignmentMetadata | None = None
     lease_expires_at: float
 
 
@@ -307,6 +394,7 @@ class TaskResult(BaseModel):
     counts: dict[str, int] = Field(default_factory=dict)
     # artifact ids by role (model/logs/workspace) — filled after uploads.
     artifacts: dict[str, str | None] = Field(default_factory=dict)
+    provenance: ResultProvenance = Field(default_factory=ResultProvenance)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -356,6 +444,8 @@ class JobView(BaseModel):
     created_at: float
     updated_at: float
     aggregate: JobAggregate = Field(default_factory=JobAggregate)
+    scheduler: DagSchedulerContract | None = None
+    submission: JobSubmissionMetadata | None = None
     error: str | None = None
 
 

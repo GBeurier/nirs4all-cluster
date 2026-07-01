@@ -26,13 +26,17 @@ from .. import __version__
 from ..schemas import (
     ArtifactView,
     ClusterStats,
+    DagSchedulerContract,
     EventView,
     HeartbeatAck,
     JobAggregate,
     JobRequest,
     JobStatus,
+    JobSubmissionMetadata,
     JobView,
     LeaseResponse,
+    ResultProvenance,
+    TaskAssignmentMetadata,
     TaskEvent,
     TaskFailure,
     TaskResult,
@@ -110,6 +114,20 @@ def _authorizer_from_config(config: ServerConfig) -> Authorizer:
     if config.token:
         principals.append(Principal(name="default", token=config.token, rights=ALL_RIGHTS))
     return Authorizer(principals)
+
+
+def _right_values(principal: Principal) -> list[str]:
+    return sorted(right.value for right in principal.rights)
+
+
+def _server_attested_job_request(req: JobRequest, principal: Principal) -> JobRequest:
+    """Attach credential-derived submit metadata before storing a client job."""
+    scheduler = req.scheduler or req.inferred_scheduler_contract()
+    # Preserve only the inferred/client-declared shape; the rights/provenance
+    # fields are server-owned constants for V1.
+    scheduler = DagSchedulerContract(shape=scheduler.shape)
+    submission = JobSubmissionMetadata(principal=principal.name, granted_rights=_right_values(principal))
+    return req.model_copy(update={"scheduler": scheduler, "submission": submission})
 
 
 def _ws_authorized(authorizer: Authorizer, websocket: WebSocket, *rights: Right) -> bool:
@@ -259,6 +277,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def submit_job(req: JobRequest, request: Request) -> JobView:
         db = db_of(request)
         broker = broker_of(request)
+        principal: Principal = request.state.principal
+        req = _server_attested_job_request(req, principal)
         if req.pipeline_list_has_python() and not config.allow_python_jobs:
             raise HTTPException(
                 status_code=400,
@@ -273,7 +293,7 @@ def create_app(config: ServerConfig) -> FastAPI:
             if existing is not None:
                 return _job_view(db, existing["id"])
         try:
-            job_id, task_ids = db.create_job_with_tasks(req)
+            job_id, task_ids = db.create_job_with_tasks(req, owner=principal.name)
         except sqlite3.IntegrityError:
             # Concurrent duplicate idempotency_key won the insert race — return it.
             if req.idempotency_key:
@@ -501,9 +521,20 @@ def create_app(config: ServerConfig) -> FastAPI:
     def lease(worker_id: str, request: Request) -> LeaseResponse:
         db = db_of(request)
         broker = broker_of(request)
+        principal: Principal = request.state.principal
         if db.get_worker(worker_id) is None:
             raise HTTPException(status_code=404, detail="unknown worker")
         payload = db.lease_next_task(worker_id, config.lease_ttl_s)
+        if payload is not None:
+            payload = payload.model_copy(
+                update={
+                    "assignment": TaskAssignmentMetadata(
+                        executor_principal=principal.name,
+                        worker_id=worker_id,
+                        granted_rights=_right_values(principal),
+                    )
+                }
+            )
         if payload is not None:
             broker.emit(
                 level="info",
@@ -585,9 +616,22 @@ def create_app(config: ServerConfig) -> FastAPI:
     def complete_task(task_id: str, result: TaskResult, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
+        principal: Principal = request.state.principal
         row = db.get_task(task_id)
         if row is None:
             raise HTTPException(status_code=404, detail="task not found")
+        result = result.model_copy(
+            update={
+                "provenance": ResultProvenance(
+                    reported_by_principal=principal.name,
+                    worker_id=worker_id,
+                    job_id=row["job_id"],
+                    task_id=task_id,
+                    attempt=row["attempt"],
+                    granted_rights=_right_values(principal),
+                )
+            }
+        )
         job_row = db.get_job(row["job_id"])
         cancelling = job_row is not None and job_row["status"] in (
             JobStatus.CANCELLING.value,
@@ -877,6 +921,10 @@ def _job_view(db: Database, job_id: str) -> JobView:
     if row is None:
         raise KeyError(job_id)
     agg, _, _ = _build_aggregate(db, job_id)
+    req = JobRequest.model_validate_json(row["request_json"])
+    submission = req.submission
+    if submission is None and row["owner"]:
+        submission = JobSubmissionMetadata(principal=row["owner"])
     return JobView(
         id=row["id"],
         type=row["type"],
@@ -886,6 +934,8 @@ def _job_view(db: Database, job_id: str) -> JobView:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         aggregate=agg,
+        scheduler=req.scheduler or req.inferred_scheduler_contract(),
+        submission=submission,
         error=row["error"],
     )
 
