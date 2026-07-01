@@ -414,8 +414,19 @@ class Database:
             worker_caps = json.loads(worker["capabilities_json"])
             worker_versions = _worker_versions(json.loads(worker["version_json"]))
             candidates = self._conn.execute(
-                "SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, created_at ASC",
-                (TaskStatus.QUEUED.value,),
+                """
+                SELECT t.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM tasks in_flight
+                           WHERE in_flight.job_id = t.job_id
+                             AND in_flight.status IN (?, ?)
+                       ) AS job_in_flight
+                FROM tasks t
+                WHERE t.status = ?
+                ORDER BY t.priority DESC, job_in_flight ASC, t.created_at ASC, t.id ASC
+                """,
+                (TaskStatus.LEASED.value, TaskStatus.RUNNING.value, TaskStatus.QUEUED.value),
             ).fetchall()
             for task in candidates:
                 reqs = Requirements.model_validate_json(task["requirements_json"])

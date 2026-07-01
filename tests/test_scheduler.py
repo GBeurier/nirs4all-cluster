@@ -119,6 +119,54 @@ def test_lease_priority_order(tmp_path):
     assert first.job_id == high  # higher priority leased first
 
 
+def test_lease_balances_same_priority_jobs_by_in_flight_count(tmp_path):
+    db = _make_db(tmp_path)
+    matrix_req = JobRequest(
+        name="matrix-a",
+        priority=3,
+        pipeline=PipelineRef(kind="path", path="/p.yaml"),
+        datasets=[DatasetRef(kind="shared_path", path="/a"), DatasetRef(kind="shared_path", path="/b")],
+    )
+    job_a = db.create_job(matrix_req)
+    db.create_tasks_for_job(job_a, matrix_req)
+    job_b = db.create_job(_job(priority=3))
+    db.create_tasks_for_job(job_b, _job(priority=3))
+
+    first_worker = db.register_worker(WorkerRegister(slots_total=1))
+    first = db.lease_next_task(first_worker, 60)
+    assert first is not None
+    assert first.job_id == job_a
+
+    second_worker = db.register_worker(WorkerRegister(slots_total=1))
+    second = db.lease_next_task(second_worker, 60)
+    assert second is not None
+    assert second.job_id == job_b
+
+
+def test_lease_priority_wins_over_same_priority_fairness(tmp_path):
+    db = _make_db(tmp_path)
+    low = db.create_job(_job(priority=3))
+    db.create_tasks_for_job(low, _job(priority=3))
+    high_req = JobRequest(
+        name="matrix-high",
+        priority=9,
+        pipeline=PipelineRef(kind="path", path="/p.yaml"),
+        datasets=[DatasetRef(kind="shared_path", path="/a"), DatasetRef(kind="shared_path", path="/b")],
+    )
+    high = db.create_job(high_req)
+    db.create_tasks_for_job(high, high_req)
+
+    first_worker = db.register_worker(WorkerRegister(slots_total=1))
+    first = db.lease_next_task(first_worker, 60)
+    assert first is not None
+    assert first.job_id == high
+
+    second_worker = db.register_worker(WorkerRegister(slots_total=1))
+    second = db.lease_next_task(second_worker, 60)
+    assert second is not None
+    assert second.job_id == high
+
+
 def test_slots_limit_concurrency(tmp_path):
     db = _make_db(tmp_path)
     job_id = db.create_job(_job())
