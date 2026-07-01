@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from nirs4all_cluster.client import ClusterClient
 from nirs4all_cluster.client_worker import WorkerClient
 from nirs4all_cluster.schemas import RunMetrics, TaskPayload, TaskResult
 from nirs4all_cluster.versioning import fingerprint_obj
+from nirs4all_cluster.worker.agent import WorkerAgent
 from nirs4all_cluster.worker.executor import ExecutionResult, execute_task
 from nirs4all_cluster.worker.materialize import build_runner_spec
 
@@ -145,6 +147,75 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
         }
     ]
     assert job.aggregate.best_model_artifact_id == result.artifacts["model"]
+
+
+def test_worker_agent_loop_runs_one_fake_job_to_completion(cluster, tmp_path, monkeypatch):
+    """Bounded proof for the long-running WorkerAgent lease loop with a fake runner dependency."""
+    _install_fake_nirs4all(tmp_path / "fake-lib", monkeypatch)
+    monkeypatch.setattr(
+        "nirs4all_cluster.worker.agent._environment_version",
+        lambda: {"packages": {"nirs4all": "fake-parity-1"}, "nirs4all_cluster": "test"},
+    )
+    dataset = _dataset(tmp_path, "agent-loop-dataset", samples=18, baseline_rmse=0.19, target_shift=0.4)
+    pipeline = {
+        "steps": [
+            {"id": "standardize", "class": "StandardScaler", "params": {"with_mean": True}},
+            {"id": "pls", "class": "PLSRegression", "after": ["standardize"], "params": {"n_components": 2}},
+        ]
+    }
+
+    errors: list[BaseException] = []
+    worker = WorkerAgent(
+        cluster.base_url,
+        token=cluster.executor,
+        state_dir=str(tmp_path / "worker-state"),
+        poll_interval=0.01,
+        gpu_count=0,
+        name="bounded-agent-loop",
+    )
+
+    def run_worker() -> None:
+        try:
+            worker.serve()
+        except BaseException as exc:  # noqa: BLE001 - fail the test with the thread exception
+            errors.append(exc)
+
+    worker.register()
+    thread = threading.Thread(target=run_worker, name="bounded-worker-agent")
+    thread.start()
+    try:
+        with ClusterClient(cluster.base_url, token=cluster.submitter, timeout=10) as submitter:
+            job = submitter.submit_nirs4all_run(
+                pipeline={"kind": "inline_json", "inline": pipeline},
+                dataset={"kind": "shared_path", "path": str(dataset), "name": dataset.name},
+                params={"random_state": 5, "dag_scale": 2},
+                n_jobs=1,
+                name="worker-agent-loop-proof",
+                outputs={"export_best_model": True, "keep_task_workspace": False},
+            )
+            job = submitter.wait(job.id, poll=0.02, timeout=10)
+            tasks = submitter.get_tasks(job.id)
+    finally:
+        worker.stop()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive(), "WorkerAgent.serve did not stop within the bounded join"
+    assert errors == []
+    assert job.status.value == "succeeded", job.aggregate.errors
+    assert job.aggregate.num_tasks == 1
+    assert job.aggregate.num_succeeded == 1
+    assert job.aggregate.best_model_artifact_id is not None
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.worker_id == worker.worker_id
+    assert task.result is not None
+    assert task.result.nirs4all_version == "fake-parity-1"
+    assert task.result.pipeline_fingerprint == fingerprint_obj(pipeline)
+    assert task.result.extra["dataset_name"] == dataset.name
+    assert task.result.provenance.worker_id == worker.worker_id
+    assert task.result.provenance.reported_by_principal == "worker1"
+    tasks_dir = tmp_path / "worker-state" / "tasks"
+    assert not tasks_dir.exists() or not any(tasks_dir.iterdir())
 
 
 def test_inline_dag_matrix_preserves_local_result_semantics(cluster, tmp_path, monkeypatch):
