@@ -156,10 +156,18 @@ class Database:
             cur = self._conn.execute("SELECT * FROM jobs WHERE idempotency_key = ?", (key,))
             return cur.fetchone()
 
-    def _insert_job(self, conn: sqlite3.Connection, req: JobRequest, job_id: str, now: float) -> None:
+    def _insert_job(
+        self,
+        conn: sqlite3.Connection,
+        req: JobRequest,
+        job_id: str,
+        now: float,
+        *,
+        owner: str | None = None,
+    ) -> None:
         conn.execute(
             "INSERT INTO jobs(id, type, name, status, priority, created_at, updated_at, "
-            "request_json, idempotency_key) VALUES (?,?,?,?,?,?,?,?,?)",
+            "owner, request_json, idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 job_id,
                 req.type,
@@ -168,6 +176,7 @@ class Database:
                 req.priority,
                 now,
                 now,
+                owner,
                 req.model_dump_json(),
                 req.idempotency_key,
             ),
@@ -185,6 +194,10 @@ class Database:
                     "params": req.params,
                     "outputs": req.outputs.model_dump(),
                 }
+                if req.scheduler is not None:
+                    payload["scheduler"] = req.scheduler.model_dump()
+                if req.submission is not None:
+                    payload["submission"] = req.submission.model_dump()
                 conn.execute(
                     "INSERT INTO tasks(id, job_id, status, attempt, max_attempts, priority, "
                     "created_at, updated_at, dataset_label, pipeline_label, requirements_json, "
@@ -207,11 +220,11 @@ class Database:
                 ids.append(task_id)
         return ids
 
-    def create_job(self, req: JobRequest) -> str:
+    def create_job(self, req: JobRequest, *, owner: str | None = None) -> str:
         now = _now()
         job_id = _gen_id("job")
         with self._lock:
-            self._insert_job(self._conn, req, job_id, now)
+            self._insert_job(self._conn, req, job_id, now, owner=owner)
             self._conn.commit()
         return job_id
 
@@ -223,7 +236,7 @@ class Database:
             self._conn.commit()
         return ids
 
-    def create_job_with_tasks(self, req: JobRequest) -> tuple[str, list[str]]:
+    def create_job_with_tasks(self, req: JobRequest, *, owner: str | None = None) -> tuple[str, list[str]]:
         """Create a job and all its tasks in a single transaction.
 
         Atomic so a crash can never leave a queued job with no tasks, and so a
@@ -233,7 +246,7 @@ class Database:
         now = _now()
         job_id = _gen_id("job")
         with self._lock:
-            self._insert_job(self._conn, req, job_id, now)
+            self._insert_job(self._conn, req, job_id, now, owner=owner)
             ids = self._insert_tasks(self._conn, job_id, req, now)
             self._conn.commit()
         return job_id, ids
@@ -799,5 +812,7 @@ def _payload_from_row(row: sqlite3.Row) -> TaskPayload:
         dataset=DatasetRef.model_validate(payload["dataset"]),
         params=payload.get("params", {}),
         outputs=Outputs.model_validate(payload.get("outputs", {})),
+        scheduler=payload.get("scheduler"),
+        submission=payload.get("submission"),
         lease_expires_at=row["lease_expires_at"],
     )

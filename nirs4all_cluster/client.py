@@ -191,7 +191,10 @@ def build_nirs4all_run_request(
         omitted_local_kwargs=omitted,
         deferred=list(_FINE_GRAINED_DAG_DEFERRED),
     ).model_dump()
-    return JobRequest.model_validate(payload)
+    req = JobRequest.model_validate(payload)
+    if req.scheduler is None:
+        req = req.model_copy(update={"scheduler": req.inferred_scheduler_contract()})
+    return req
 
 
 class ClusterClient:
