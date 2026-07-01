@@ -78,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE TABLE IF NOT EXISTS workers (
     id                TEXT PRIMARY KEY,
     name              TEXT,
+    principal         TEXT,
     status            TEXT NOT NULL,
     created_at        REAL NOT NULL,
     last_seen_at      REAL NOT NULL,
@@ -141,11 +142,21 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def _migrate_schema(self) -> None:
+        """Apply additive migrations for SQLite files created by older betas."""
+        worker_cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(workers)").fetchall()
+        }
+        if "principal" not in worker_cols:
+            self._conn.execute("ALTER TABLE workers ADD COLUMN principal TEXT")
 
     # --------------------------------------------------------------------- #
     # Jobs
@@ -591,16 +602,17 @@ class Database:
     # Workers
     # --------------------------------------------------------------------- #
 
-    def register_worker(self, reg: WorkerRegister) -> str:
+    def register_worker(self, reg: WorkerRegister, *, principal: str | None = None) -> str:
         now = _now()
         worker_id = _gen_id("worker")
         with self._lock:
             self._conn.execute(
-                "INSERT INTO workers(id, name, status, created_at, last_seen_at, labels_json, "
-                "capabilities_json, slots_total, slots_used, version_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO workers(id, name, principal, status, created_at, last_seen_at, labels_json, "
+                "capabilities_json, slots_total, slots_used, version_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     worker_id,
                     reg.name,
+                    principal,
                     WorkerStatus.ALIVE.value,
                     now,
                     now,

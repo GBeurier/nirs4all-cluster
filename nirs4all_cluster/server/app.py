@@ -120,6 +120,32 @@ def _right_values(principal: Principal) -> list[str]:
     return sorted(right.value for right in principal.rights)
 
 
+def _require_worker_principal(db: Database, worker_id: str, principal: Principal) -> Any:
+    """Return a worker row only when it belongs to the authenticated principal."""
+    worker = db.get_worker(worker_id)
+    if worker is None:
+        raise HTTPException(status_code=404, detail="unknown worker")
+    owner = worker["principal"]
+    if owner is not None and owner != principal.name:
+        raise HTTPException(
+            status_code=403,
+            detail=f"principal {principal.name!r} is not registered for worker {worker_id}",
+        )
+    return worker
+
+
+def _require_task_worker_principal(db: Database, task_id: str, principal: Principal) -> Any:
+    """Return a task row only when its assigned worker belongs to the principal."""
+    row = db.get_task(task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    worker_id = row["worker_id"]
+    if worker_id is None:
+        raise HTTPException(status_code=409, detail="task is not leased by a worker")
+    _require_worker_principal(db, worker_id, principal)
+    return row
+
+
 def _server_attested_job_request(req: JobRequest, principal: Principal) -> JobRequest:
     """Attach credential-derived submit metadata before storing a client job."""
     scheduler = req.scheduler or req.inferred_scheduler_contract()
@@ -484,7 +510,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def register_worker(reg: WorkerRegister, request: Request) -> WorkerRegistered:
         db = db_of(request)
         broker = broker_of(request)
-        worker_id = db.register_worker(reg)
+        principal: Principal = request.state.principal
+        worker_id = db.register_worker(reg, principal=principal.name)
         broker.emit(
             level="info",
             type="worker_registered",
@@ -493,7 +520,6 @@ def create_app(config: ServerConfig) -> FastAPI:
             data={"labels": reg.labels, "slots": reg.slots_total},
         )
         # Echo the granted rights so the executor can self-diagnose (additive).
-        principal: Principal = request.state.principal
         return WorkerRegistered(
             worker_id=worker_id,
             heartbeat_interval_s=config.heartbeat_interval_s,
@@ -504,6 +530,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.post("/v1/workers/{worker_id}/heartbeat", dependencies=[Depends(requires(Right.EXECUTE))])
     def heartbeat(worker_id: str, request: Request) -> HeartbeatAck:
         db = db_of(request)
+        principal: Principal = request.state.principal
+        _require_worker_principal(db, worker_id, principal)
         if not db.heartbeat_worker(worker_id, config.lease_ttl_s):
             raise HTTPException(status_code=404, detail="unknown worker")
         # Tell the worker which of its in-flight tasks belong to cancelling jobs.
@@ -522,8 +550,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         db = db_of(request)
         broker = broker_of(request)
         principal: Principal = request.state.principal
-        if db.get_worker(worker_id) is None:
-            raise HTTPException(status_code=404, detail="unknown worker")
+        _require_worker_principal(db, worker_id, principal)
         payload = db.lease_next_task(worker_id, config.lease_ttl_s)
         if payload is not None:
             payload = payload.model_copy(
@@ -551,6 +578,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def start_task(task_id: str, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
+        principal: Principal = request.state.principal
+        _require_worker_principal(db, worker_id, principal)
         try:
             row = db.start_task(task_id, worker_id)
         except PermissionError as exc:
@@ -574,9 +603,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def task_event(task_id: str, ev: TaskEvent, request: Request) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
-        row = db.get_task(task_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="task not found")
+        principal: Principal = request.state.principal
+        row = _require_task_worker_principal(db, task_id, principal)
         broker.emit(
             level=ev.level.value,
             type=ev.type,
@@ -598,9 +626,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     ) -> dict[str, Any]:
         db = db_of(request)
         store = store_of(request)
-        row = db.get_task(task_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="task not found")
+        principal: Principal = request.state.principal
+        row = _require_task_worker_principal(db, task_id, principal)
         max_bytes = config.max_artifact_mb * 1024 * 1024
         try:
             sha, path, size = await asyncio.to_thread(store.put_stream, file.file, max_bytes)
@@ -617,6 +644,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         db = db_of(request)
         broker = broker_of(request)
         principal: Principal = request.state.principal
+        _require_worker_principal(db, worker_id, principal)
         row = db.get_task(task_id)
         if row is None:
             raise HTTPException(status_code=404, detail="task not found")
@@ -680,6 +708,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def fail_task(task_id: str, failure: TaskFailure, request: Request, worker_id: str) -> dict[str, Any]:
         db = db_of(request)
         broker = broker_of(request)
+        principal: Principal = request.state.principal
+        _require_worker_principal(db, worker_id, principal)
         row = db.get_task(task_id)
         if row is None:
             raise HTTPException(status_code=404, detail="task not found")

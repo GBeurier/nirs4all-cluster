@@ -92,6 +92,7 @@ def test_enforced_missing_right_is_403():
 
 SUBMITTER = "s"
 EXECUTOR = "e"
+EXECUTOR_2 = "x"
 VIEWER = "v"
 ADMIN = "a"
 
@@ -102,6 +103,7 @@ def _rbac_app(tmp_path):
         principals=[
             Principal.from_roles("alice", SUBMITTER, ["submitter"]),
             Principal.from_roles("worker1", EXECUTOR, ["executor"]),
+            Principal.from_roles("worker2", EXECUTOR_2, ["executor"]),
             Principal.from_roles("dash", VIEWER, ["viewer"]),
             Principal.from_roles("ops", ADMIN, ["admin"]),
         ],
@@ -202,6 +204,83 @@ def test_admin_can_do_everything(rbac_client):
 def test_register_echoes_granted_rights(rbac_client):
     reg = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()
     assert set(reg["rights"]) == {"read", "execute"}
+
+
+def test_worker_lifecycle_is_bound_to_registering_principal(rbac_client):
+    job_id = rbac_client.post("/v1/jobs", json=_job(), headers=_hdr(ADMIN)).json()["id"]
+    worker1 = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR)).json()[
+        "worker_id"
+    ]
+    worker2 = rbac_client.post("/v1/workers/register", json=_worker_body(), headers=_hdr(EXECUTOR_2)).json()[
+        "worker_id"
+    ]
+
+    assert rbac_client.post(f"/v1/workers/{worker2}/heartbeat", headers=_hdr(EXECUTOR_2)).status_code == 200
+    stolen_heartbeat = rbac_client.post(f"/v1/workers/{worker1}/heartbeat", headers=_hdr(EXECUTOR_2))
+    assert stolen_heartbeat.status_code == 403
+    assert "not registered for worker" in stolen_heartbeat.json()["detail"]
+    assert rbac_client.post(f"/v1/workers/{worker1}/lease", headers=_hdr(EXECUTOR_2)).status_code == 403
+
+    leased = rbac_client.post(f"/v1/workers/{worker1}/lease", headers=_hdr(EXECUTOR)).json()["task"]
+    task_id = leased["task_id"]
+
+    assert (
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/start",
+            params={"worker_id": worker1},
+            headers=_hdr(EXECUTOR_2),
+        ).status_code
+        == 403
+    )
+    assert (
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/events",
+            json={"level": "info", "message": "spoofed"},
+            headers=_hdr(EXECUTOR_2),
+        ).status_code
+        == 403
+    )
+    artifact = rbac_client.post(
+        f"/v1/tasks/{task_id}/artifacts",
+        params={"role": "logs", "kind": "log"},
+        files={"file": ("log.txt", b"spoofed", "text/plain")},
+        headers=_hdr(EXECUTOR_2),
+    )
+    assert artifact.status_code == 403
+
+    result_body = {
+        "status": "succeeded",
+        "duration_seconds": 0.1,
+        "metrics": {"best_rmse": 0.2},
+        "artifacts": {},
+    }
+    assert (
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/complete",
+            params={"worker_id": worker1},
+            json=result_body,
+            headers=_hdr(EXECUTOR_2),
+        ).status_code
+        == 403
+    )
+    assert (
+        rbac_client.post(
+            f"/v1/tasks/{task_id}/fail",
+            params={"worker_id": worker1},
+            json={"error": "spoofed"},
+            headers=_hdr(EXECUTOR_2),
+        ).status_code
+        == 403
+    )
+
+    rbac_client.post(f"/v1/tasks/{task_id}/start", params={"worker_id": worker1}, headers=_hdr(EXECUTOR)).raise_for_status()
+    rbac_client.post(
+        f"/v1/tasks/{task_id}/complete",
+        params={"worker_id": worker1},
+        json=result_body,
+        headers=_hdr(EXECUTOR),
+    ).raise_for_status()
+    assert rbac_client.get(f"/v1/jobs/{job_id}", headers=_hdr(ADMIN)).json()["status"] == "succeeded"
 
 
 def test_dag_scheduler_contract_records_rights_and_result_provenance(rbac_client):
