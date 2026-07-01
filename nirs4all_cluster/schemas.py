@@ -145,6 +145,29 @@ class RetryPolicy(BaseModel):
     max_attempts: int = Field(default=2, ge=1, le=10)
 
 
+class DistributedRunParity(BaseModel):
+    """Client-declared parity contract for a distributed ``nirs4all.run`` job.
+
+    The cluster beta distributes only whole ``nirs4all.run`` calls: one isolated
+    task workspace per explicit ``pipeline x dataset`` pair. Fine-grained DAG
+    grains such as variants, folds, or reusable subtrees are intentionally
+    out-of-scope until the core / dag-ml contracts provide those execution units.
+    """
+
+    local_entrypoint: Literal["nirs4all.run"] = "nirs4all.run"
+    scope: Literal["atomic", "pipeline_dataset_matrix"]
+    task_granularity: Literal["whole_nirs4all_run"] = "whole_nirs4all_run"
+    workspace_policy: Literal["isolated_task_workspace"] = "isolated_task_workspace"
+    metric_tolerance_abs: float = Field(default=1e-6, ge=0)
+    expected_metric_keys: list[str] = Field(
+        default_factory=lambda: ["best_score", "best_rmse", "best_r2", "best_mae", "best_accuracy"]
+    )
+    preserved_params: list[str] = Field(default_factory=list)
+    translated_params: dict[str, str] = Field(default_factory=dict)
+    omitted_local_kwargs: list[str] = Field(default_factory=list)
+    deferred: list[str] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------------- #
 # Job submission (client -> server)
 # --------------------------------------------------------------------------- #
@@ -175,6 +198,11 @@ class JobRequest(BaseModel):
     # Metric used to rank tasks of a composite job (key inside TaskResult.metrics).
     rank_metric: str = "best_rmse"
     rank_mode: Literal["min", "max"] = "min"
+
+    # Optional client-side contract emitted by the core/CLI adapter. The server
+    # stores it for traceability; scheduling and execution still depend only on
+    # the explicit pipeline/dataset/requirements fields above.
+    parity: DistributedRunParity | None = None
 
     idempotency_key: str | None = None
 

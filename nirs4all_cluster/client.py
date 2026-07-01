@@ -26,6 +26,7 @@ from .client_transport import make_http_client, request
 from .schemas import (
     ClusterStats,
     DatasetRef,
+    DistributedRunParity,
     EventView,
     JobRequest,
     JobView,
@@ -38,6 +39,11 @@ PipelineInput = PipelineRef | dict | str
 DatasetInput = DatasetRef | dict | str
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
+_FINE_GRAINED_DAG_DEFERRED = [
+    "variant-level DAG distribution requires a core/dag-ml execution-unit contract",
+    "fold-level distribution requires core-owned OOF/selection/refit parity contracts",
+    "subtree/cache distribution requires a shared data/artifact provider contract",
+]
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,117 @@ def _as_dataset(value: DatasetInput) -> DatasetRef:
     if isinstance(value, str):
         return DatasetRef(kind="shared_path", path=value)
     return DatasetRef.model_validate(value)
+
+
+def _normalize_run_params(
+    params: dict[str, Any] | None,
+    *,
+    n_jobs: int | None,
+    inner_n_jobs: int | None,
+    workspace_path: str | Path | None,
+) -> tuple[dict[str, Any], dict[str, str], list[str]]:
+    run_params = dict(params or {})
+    translated: dict[str, str] = {}
+    omitted: list[str] = []
+
+    params_workspace = run_params.pop("workspace_path", None)
+    if workspace_path is not None or params_workspace is not None:
+        omitted.append("workspace_path")
+        if workspace_path is not None and params_workspace is not None and str(workspace_path) != str(params_workspace):
+            raise ValueError("workspace_path was provided both as an argument and in params with different values")
+
+    params_n_jobs = run_params.pop("n_jobs", None)
+    params_inner_n_jobs = run_params.pop("inner_n_jobs", None)
+    requested_inner = inner_n_jobs
+
+    if n_jobs is not None:
+        requested_inner = _choose_inner_n_jobs(requested_inner, int(n_jobs), source="n_jobs")
+        translated["n_jobs"] = "inner_n_jobs"
+    if params_n_jobs is not None:
+        requested_inner = _choose_inner_n_jobs(requested_inner, int(params_n_jobs), source="params['n_jobs']")
+        translated["n_jobs"] = "inner_n_jobs"
+    if params_inner_n_jobs is not None:
+        requested_inner = _choose_inner_n_jobs(
+            requested_inner, int(params_inner_n_jobs), source="params['inner_n_jobs']"
+        )
+    if requested_inner is not None:
+        if requested_inner < 1:
+            raise ValueError("inner_n_jobs must be >= 1")
+        run_params["inner_n_jobs"] = requested_inner
+    return run_params, translated, sorted(set(omitted))
+
+
+def _choose_inner_n_jobs(current: int | None, candidate: int, *, source: str) -> int:
+    if candidate < 1:
+        raise ValueError(f"{source} must be >= 1")
+    if current is not None and current != candidate:
+        raise ValueError(f"conflicting nirs4all.run parallelism values: {current} vs {candidate} from {source}")
+    return candidate
+
+
+def build_nirs4all_run_request(
+    *,
+    pipeline: PipelineInput | None = None,
+    dataset: DatasetInput | None = None,
+    pipelines: list[PipelineInput] | None = None,
+    datasets: list[DatasetInput] | None = None,
+    params: dict[str, Any] | None = None,
+    n_jobs: int | None = None,
+    inner_n_jobs: int | None = None,
+    workspace_path: str | Path | None = None,
+    name: str | None = None,
+    priority: int = 0,
+    requirements: dict[str, Any] | None = None,
+    outputs: dict[str, Any] | None = None,
+    retry: dict[str, Any] | None = None,
+    rank_metric: str = "best_rmse",
+    rank_mode: str = "min",
+    idempotency_key: str | None = None,
+    metric_tolerance_abs: float = 1e-6,
+) -> JobRequest:
+    """Build the core/CLI-facing ``nirs4all.run`` cluster job contract.
+
+    This accepts the local ``nirs4all.run`` vocabulary where it matters:
+    ``workspace_path`` is intentionally omitted because every worker task gets an
+    isolated workspace, while ``n_jobs`` is translated to the runner's
+    ``inner_n_jobs`` parameter.
+    """
+    run_params, translated, omitted = _normalize_run_params(
+        params, n_jobs=n_jobs, inner_n_jobs=inner_n_jobs, workspace_path=workspace_path
+    )
+    payload: dict[str, Any] = {
+        "type": "nirs4all.run",
+        "name": name,
+        "priority": priority,
+        "params": run_params,
+        "rank_metric": rank_metric,
+        "rank_mode": rank_mode,
+        "idempotency_key": idempotency_key,
+    }
+    plural = pipelines is not None or datasets is not None
+    if pipelines is not None:
+        payload["pipelines"] = [_as_pipeline(p).model_dump() for p in pipelines]
+    elif pipeline is not None:
+        payload["pipeline"] = _as_pipeline(pipeline).model_dump()
+    if datasets is not None:
+        payload["datasets"] = [_as_dataset(d).model_dump() for d in datasets]
+    elif dataset is not None:
+        payload["dataset"] = _as_dataset(dataset).model_dump()
+    if requirements is not None:
+        payload["requirements"] = requirements
+    if outputs is not None:
+        payload["outputs"] = outputs
+    if retry is not None:
+        payload["retry"] = retry
+    payload["parity"] = DistributedRunParity(
+        scope="pipeline_dataset_matrix" if plural else "atomic",
+        metric_tolerance_abs=metric_tolerance_abs,
+        preserved_params=sorted(k for k in run_params if k != "inner_n_jobs"),
+        translated_params=translated,
+        omitted_local_kwargs=omitted,
+        deferred=list(_FINE_GRAINED_DAG_DEFERRED),
+    ).model_dump()
+    return JobRequest.model_validate(payload)
 
 
 class ClusterClient:
@@ -148,30 +265,65 @@ class ClusterClient:
         rank_mode: str = "min",
         idempotency_key: str | None = None,
     ) -> JobView:
-        payload: dict[str, Any] = {
-            "type": "nirs4all.run",
-            "name": name,
-            "priority": priority,
-            "params": params or {},
-            "rank_metric": rank_metric,
-            "rank_mode": rank_mode,
-            "idempotency_key": idempotency_key,
-        }
-        if pipelines is not None:
-            payload["pipelines"] = [_as_pipeline(p).model_dump() for p in pipelines]
-        elif pipeline is not None:
-            payload["pipeline"] = _as_pipeline(pipeline).model_dump()
-        if datasets is not None:
-            payload["datasets"] = [_as_dataset(d).model_dump() for d in datasets]
-        elif dataset is not None:
-            payload["dataset"] = _as_dataset(dataset).model_dump()
-        if requirements is not None:
-            payload["requirements"] = requirements
-        if outputs is not None:
-            payload["outputs"] = outputs
-        if retry is not None:
-            payload["retry"] = retry
-        return self.submit(payload)
+        return self.submit_nirs4all_run(
+            pipeline=pipeline,
+            dataset=dataset,
+            pipelines=pipelines,
+            datasets=datasets,
+            params=params,
+            name=name,
+            priority=priority,
+            requirements=requirements,
+            outputs=outputs,
+            retry=retry,
+            rank_metric=rank_metric,
+            rank_mode=rank_mode,
+            idempotency_key=idempotency_key,
+        )
+
+    def submit_nirs4all_run(
+        self,
+        *,
+        pipeline: PipelineInput | None = None,
+        dataset: DatasetInput | None = None,
+        pipelines: list[PipelineInput] | None = None,
+        datasets: list[DatasetInput] | None = None,
+        params: dict[str, Any] | None = None,
+        n_jobs: int | None = None,
+        inner_n_jobs: int | None = None,
+        workspace_path: str | Path | None = None,
+        name: str | None = None,
+        priority: int = 0,
+        requirements: dict[str, Any] | None = None,
+        outputs: dict[str, Any] | None = None,
+        retry: dict[str, Any] | None = None,
+        rank_metric: str = "best_rmse",
+        rank_mode: str = "min",
+        idempotency_key: str | None = None,
+        metric_tolerance_abs: float = 1e-6,
+    ) -> JobView:
+        """Submit a local ``nirs4all.run`` shaped job through the cluster adapter."""
+        return self.submit(
+            build_nirs4all_run_request(
+                pipeline=pipeline,
+                dataset=dataset,
+                pipelines=pipelines,
+                datasets=datasets,
+                params=params,
+                n_jobs=n_jobs,
+                inner_n_jobs=inner_n_jobs,
+                workspace_path=workspace_path,
+                name=name,
+                priority=priority,
+                requirements=requirements,
+                outputs=outputs,
+                retry=retry,
+                rank_metric=rank_metric,
+                rank_mode=rank_mode,
+                idempotency_key=idempotency_key,
+                metric_tolerance_abs=metric_tolerance_abs,
+            )
+        )
 
     def upload_artifact(self, path: str | Path, *, kind: str = "input") -> str:
         """Upload an input file (pipeline YAML / dataset zip); returns artifact_id."""

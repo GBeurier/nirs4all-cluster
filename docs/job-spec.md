@@ -5,6 +5,12 @@ A job is a YAML/JSON document (the wire contract is the Pydantic models in
 of `dataset`/`datasets`; lists decompose into the cartesian product
 ({doc}`concepts/job-decomposition`).
 
+The Python/CLI adapter adds an optional `parity` field (`DistributedRunParity`) to jobs
+it creates. This is traceability metadata, not a scheduler input: it records that the
+distributed beta runs one whole `nirs4all.run` per task, expects metric parity for atomic
+and explicit matrix jobs, and defers fine-grained DAG/variant/fold/subtree parity until
+core/dag-ml execution-unit and data-provider contracts exist.
+
 ## Pipeline references (`kind`)
 
 - `path` — a pipeline YAML readable on the worker (shared/worker-local filesystem).
@@ -45,6 +51,7 @@ of `dataset`/`datasets`; lists decompose into the cartesian product
 .. autoclass:: nirs4all_cluster.schemas.Requirements
 .. autoclass:: nirs4all_cluster.schemas.Outputs
 .. autoclass:: nirs4all_cluster.schemas.RetryPolicy
+.. autoclass:: nirs4all_cluster.schemas.DistributedRunParity
 .. autoclass:: nirs4all_cluster.schemas.JobView
 .. autoclass:: nirs4all_cluster.schemas.JobAggregate
 .. autoclass:: nirs4all_cluster.schemas.TaskView
