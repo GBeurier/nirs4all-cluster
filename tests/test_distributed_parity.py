@@ -23,7 +23,7 @@ from nirs4all_cluster.worker.materialize import build_runner_spec
 
 
 def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, monkeypatch):
-    """A simple cluster-submitted nirs4all job preserves the local result envelope."""
+    """A constrained cluster job is scheduled to an eligible worker and preserves the result envelope."""
     pipeline = tmp_path / "pls.yaml"
     pipeline.write_text("steps:\n  - class: PLS\n    n_components: 2\n", encoding="utf-8")
     dataset = tmp_path / "dataset"
@@ -49,11 +49,48 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             pipeline=str(pipeline),
             dataset={"kind": "shared_path", "path": str(dataset), "name": "fake-dataset"},
             params={"random_state": 42, "refit": True},
+            requirements={"labels": {"site": "release-lab"}, "min_gpu_count": 1},
             n_jobs=1,
             name="parity-harness",
             outputs={"export_best_model": True, "keep_task_workspace": False},
         )
+
+        missing_nirs4all = worker.register(
+            labels={"site": "release-lab"},
+            capabilities={"gpu_count": 1},
+            slots_total=1,
+            version={"packages": {}},
+            name="missing-nirs4all-worker",
+        )
+        assert "execute" in missing_nirs4all.rights
+        assert worker.lease() is None
+
+        wrong_site = worker.register(
+            labels={"site": "other-lab"},
+            capabilities={"gpu_count": 1},
+            slots_total=1,
+            version={"packages": {"nirs4all": "fake-parity-1"}},
+            name="wrong-site-worker",
+        )
+        assert "execute" in wrong_site.rights
+        assert worker.lease() is None
+
+        cpu_only = worker.register(
+            labels={"site": "release-lab"},
+            capabilities={"gpu_count": 0},
+            slots_total=1,
+            version={"packages": {"nirs4all": "fake-parity-1"}},
+            name="cpu-only-worker",
+        )
+        assert "execute" in cpu_only.rights
+        assert worker.lease() is None
+
+        assert submitter.get_job(job.id).status.value == "queued"
+        assert submitter.stats().tasks_in_flight == 0
+
         registered = worker.register(
+            labels={"site": "release-lab"},
+            capabilities={"gpu_count": 1},
             slots_total=1,
             version={"packages": {"nirs4all": "fake-parity-1"}},
             name="parity-worker",
@@ -63,6 +100,16 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
 
         task = worker.lease()
         assert task is not None
+        assert task.scheduler is not None
+        assert task.scheduler.shape == "atomic"
+        assert task.submission is not None
+        assert task.submission.principal == "alice"
+        assert task.assignment is not None
+        assert task.assignment.assigned_by == "server"
+        assert task.assignment.executor_principal == "worker1"
+        assert task.assignment.worker_id == registered.worker_id
+        assert task.assignment.required_rights == ["execute"]
+        assert set(task.assignment.granted_rights) == {"read", "execute"}
         worker.start_task(task.task_id)
         spec = build_runner_spec(task, tmp_path / "distributed-task", worker.download_artifact)
         distributed = execute_task(spec, tmp_path / "distributed-task", poll_interval=0.01, timeout=10)
@@ -78,6 +125,12 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
     result = tasks[0].result
     assert result is not None
     assert _normalize_task_result(result) == expected
+    assert result.provenance.reported_by_principal == "worker1"
+    assert result.provenance.worker_id == registered.worker_id
+    assert result.provenance.job_id == job.id
+    assert result.provenance.task_id == task.task_id
+    assert result.provenance.attempt == 1
+    assert set(result.provenance.granted_rights) == {"read", "execute"}
     assert result.pipeline_fingerprint == spec["pipeline_fingerprint"]
     assert job.aggregate.num_tasks == 1
     assert job.aggregate.num_succeeded == 1
