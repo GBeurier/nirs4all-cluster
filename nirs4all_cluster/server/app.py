@@ -75,7 +75,7 @@ class ServerConfig:
     state_dir: str
     # Legacy single shared secret. When set (and no richer principals are given)
     # it is treated as one all-rights ``admin`` principal — preserving the
-    # prototype's "one --token ${N4CLUSTER_TOKEN} everything" trusted-LAN behaviour.
+    # Legacy trusted-LAN behaviour: one shared credential grants all rights.
     token: str | None = None
     # Credential-bound RBAC principals (named identity → static token → rights).
     # Any non-empty list (or a set ``token``) switches the server from open/dev

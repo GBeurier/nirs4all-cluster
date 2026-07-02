@@ -2,9 +2,9 @@
 
 Subcommands:
 
-    n4cluster server   --host 0.0.0.0 --port 8765 --state ./cluster-state [--token ${N4CLUSTER_TOKEN} [--allow-python-jobs]
-    n4cluster worker   --server URL [--token ${N4CLUSTER_TOKEN} [--labels k=v,...] [--slots N] [--allow-python]
-    n4cluster submit   job.yaml [--server URL] [--token ${N4CLUSTER_TOKEN} [--wait] [--out DIR]
+    n4cluster server   --host 0.0.0.0 --port 8765 --state ./cluster-state [auth options] [--allow-python-jobs]
+    n4cluster worker   --server URL [auth options] [--labels k=v,...] [--slots N] [--allow-python]
+    n4cluster submit   job.yaml [--server URL] [auth options] [--wait] [--out DIR]
     n4cluster run      --pipeline P.yaml --dataset DATA [--param k=v] [--wait]
     n4cluster status   JOB_ID
     n4cluster jobs     [--status S] [--name N] [--limit L]
@@ -472,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[n4cluster] forbidden{who}: your credential lacks the right(s): {missing}", file=sys.stderr)
         return 3
     except ClusterAuthError:
-        print("[n4cluster] unauthorized: set a valid --token ${N4CLUSTER_TOKEN} $N4CLUSTER_TOKEN", file=sys.stderr)
+        print("[n4cluster] unauthorized: provide a valid authentication credential", file=sys.stderr)
         return 3
     except ClusterConnectionError as exc:
         print(f"[n4cluster] cannot reach server: {exc.message}", file=sys.stderr)

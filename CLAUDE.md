@@ -56,7 +56,7 @@ pytest -k "lease and retry" -q
 Running the system (entry point `n4cluster`, also `$N4CLUSTER_SERVER` / `$N4CLUSTER_TOKEN`):
 
 ```bash
-n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state [--token ${N4CLUSTER_TOKEN} [--allow-python-jobs]
+n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state [auth options] [--allow-python-jobs]
 n4cluster worker --server http://HOST:8765 --labels site=lab --slots 1 [--gpus N] [--allow-python]
 n4cluster submit examples/job.shared-path.yaml --wait --out ./results
 n4cluster status|logs|cancel|artifacts|workers <job_id>
