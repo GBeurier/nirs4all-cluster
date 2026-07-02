@@ -119,6 +119,31 @@ def test_lease_priority_order(tmp_path):
     assert first.job_id == high  # higher priority leased first
 
 
+def test_lease_skips_ineligible_high_priority_task(tmp_path):
+    db = _make_db(tmp_path)
+    gpu_req = JobRequest(
+        priority=9,
+        pipeline=PipelineRef(kind="path", path="/gpu.yaml"),
+        dataset=DatasetRef(kind="shared_path", path="/gpu-data"),
+        requirements=Requirements(min_gpu_count=1),
+    )
+    cpu_req = _job(priority=1)
+    gpu_job = db.create_job(gpu_req)
+    db.create_tasks_for_job(gpu_job, gpu_req)
+    cpu_job = db.create_job(cpu_req)
+    db.create_tasks_for_job(cpu_job, cpu_req)
+
+    cpu_worker = db.register_worker(WorkerRegister(slots_total=1, capabilities={"gpu_count": 0}))
+    first = db.lease_next_task(cpu_worker, 60)
+    assert first is not None
+    assert first.job_id == cpu_job
+
+    gpu_worker = db.register_worker(WorkerRegister(slots_total=1, capabilities={"gpu_count": 1}))
+    second = db.lease_next_task(gpu_worker, 60)
+    assert second is not None
+    assert second.job_id == gpu_job
+
+
 def test_slots_limit_concurrency(tmp_path):
     db = _make_db(tmp_path)
     job_id = db.create_job(_job())

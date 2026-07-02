@@ -491,6 +491,27 @@ def test_dag_scheduler_contract_records_rights_and_result_provenance(rbac_client
     assert finished["aggregate"]["best_metric"] == 0.12
 
 
+def test_scheduler_shape_is_server_normalized(rbac_client):
+    req = _dag_job()
+    req["scheduler"] = {
+        "shape": "atomic",
+        "submit_rights_required": ["admin"],
+        "execute_rights_required": ["admin"],
+    }
+
+    submitted = rbac_client.post("/v1/jobs", json=req, headers=_hdr(SUBMITTER))
+    assert submitted.status_code == 200
+    job = submitted.json()
+    assert job["scheduler"] == {
+        "shape": "dag_shaped_whole_run",
+        "task_granularity": "whole_nirs4all_run",
+        "assignment_mode": "server_leased_executor",
+        "result_provenance": "server_attested_worker_report",
+        "submit_rights_required": ["submit"],
+        "execute_rights_required": ["execute"],
+    }
+
+
 def test_role_header_confers_nothing(rbac_client):
     # A viewer self-asserting admin via the advisory X-N4C-Role header gains
     # nothing — rights come from the credential, not the header.

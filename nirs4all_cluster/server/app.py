@@ -156,9 +156,10 @@ def _require_task_reporter(db: Database, task_id: str, worker_id: str, principal
 
 def _server_attested_job_request(req: JobRequest, principal: Principal) -> JobRequest:
     """Attach credential-derived submit metadata before storing a client job."""
-    scheduler = req.scheduler or req.inferred_scheduler_contract()
-    # Preserve only the inferred/client-declared shape; the rights/provenance
-    # fields are server-owned constants for V1.
+    scheduler = req.inferred_scheduler_contract()
+    # The shape, rights, and provenance fields are server-owned constants for V1.
+    # A client may send this metadata for traceability, but it cannot down-label
+    # a matrix or DAG-looking request as a simpler scheduler shape.
     scheduler = DagSchedulerContract(shape=scheduler.shape)
     submission = JobSubmissionMetadata(principal=principal.name, granted_rights=_right_values(principal))
     return req.model_copy(update={"scheduler": scheduler, "submission": submission})
