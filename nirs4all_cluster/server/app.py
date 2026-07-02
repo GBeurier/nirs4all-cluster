@@ -156,10 +156,11 @@ def _require_task_reporter(db: Database, task_id: str, worker_id: str, principal
 
 def _server_attested_job_request(req: JobRequest, principal: Principal) -> JobRequest:
     """Attach credential-derived submit metadata before storing a client job."""
-    scheduler = req.scheduler or req.inferred_scheduler_contract()
-    # Preserve only the inferred/client-declared shape; the rights/provenance
-    # fields are server-owned constants for V1.
-    scheduler = DagSchedulerContract(shape=scheduler.shape)
+    inferred = req.inferred_scheduler_contract()
+    # The whole scheduler contract is server-attested. A client may send the field
+    # for traceability, but its shape must not override what the server infers
+    # from the validated payload.
+    scheduler = DagSchedulerContract(shape=inferred.shape)
     submission = JobSubmissionMetadata(principal=principal.name, granted_rights=_right_values(principal))
     return req.model_copy(update={"scheduler": scheduler, "submission": submission})
 
