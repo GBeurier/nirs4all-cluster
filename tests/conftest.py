@@ -22,7 +22,7 @@ import uvicorn
 from nirs4all_cluster.server.app import ServerConfig, create_app
 from nirs4all_cluster.server.auth import Principal
 
-# RBAC tokens by role (mirrors tests/test_rbac.py so the two read consistently).
+# RBAC test credentials by role (mirrors tests/test_rbac.py so the two read consistently).
 SUBMITTER_TOKEN = "s"
 EXECUTOR_TOKEN = "e"
 VIEWER_TOKEN = "v"
