@@ -7,7 +7,7 @@
 n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state --log-file server.log
 
 # workers (inside a provisioned nirs4all environment), repeated per machine
-N4CLUSTER_TOKEN=$N4CLUSTER_TOKEN n4cluster worker --server http://HOST:8765 --labels site=lab --slots 2
+n4cluster worker --server http://HOST:8765 --labels site=lab --slots 2
 ```
 
 Watch live state at `http://HOST:8765/ui` ({doc}`dashboard`) or with `n4cluster jobs` /
