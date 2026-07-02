@@ -7,7 +7,8 @@ This walkthrough assumes a **trusted LAN**. For a real deployment read
 
 ```{code-block} bash
 n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state
-# optionally:  --allow-python-jobs  --log-file server.log
+# optionally set N4CLUSTER_TOKEN via your shell or secret manager, then pass
+#  --allow-python-jobs  --log-file server.log
 ```
 
 The server prints its URL and the dashboard address (`http://HOST:8765/ui`).
