@@ -483,6 +483,11 @@ class Database:
         A report from a worker that no longer owns the task (it was reaped and
         reassigned, or it is stale) is ignored so it cannot release another
         worker's slot or requeue a running task.
+
+        The task always moves through ``failed`` first — legal from both ``leased``
+        and ``running`` (the design's ``running -> failed -> queued|failed``) — and
+        a retriable failure with attempts left is then requeued from there. A direct
+        ``running -> queued`` would violate the state machine and raise.
         """
         with self._lock:
             row = self.get_task(task_id)
@@ -490,6 +495,7 @@ class Database:
                 raise KeyError(task_id)
             if worker_id is not None and row["worker_id"] != worker_id:
                 raise PermissionError("stale failure report: task not owned by this worker")
+            failed = self._set_task_status(self._conn, task_id, TaskStatus.FAILED, error=error)
             if retriable and row["attempt"] < row["max_attempts"]:
                 updated = self._set_task_status(
                     self._conn,
@@ -500,9 +506,7 @@ class Database:
                     error=error,
                 )
             else:
-                updated = self._set_task_status(
-                    self._conn, task_id, TaskStatus.FAILED, error=error
-                )
+                updated = failed
             if worker_id is not None:
                 self._sync_slots(worker_id)
             self._conn.commit()

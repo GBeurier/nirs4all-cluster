@@ -271,6 +271,28 @@ def test_cancelled_success_report_emits_cancelled_not_completed(client):
     assert all(event["type"] != "task_completed" for event in task_events)
 
 
+def test_running_task_retriable_failure_requeues_via_api(client):
+    """A worker reporting a retriable failure on a started (running) task must get
+    a 200 with requeued=True — not a 500 from an illegal running -> queued."""
+    job = client.post("/v1/jobs", json=_atomic_job()).json()
+    worker = _register(client)
+    task = _lease(client, worker)
+    client.post(f"/v1/tasks/{task['task_id']}/start", params={"worker_id": worker}).raise_for_status()
+
+    resp = client.post(
+        f"/v1/tasks/{task['task_id']}/fail",
+        params={"worker_id": worker},
+        json={"error": "runner boom", "retriable": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["requeued"] is True
+    # Job stays running (task requeued), and the worker can lease it again.
+    assert client.get(f"/v1/jobs/{job['id']}").json()["status"] == "running"
+    retry = _lease(client, worker)
+    assert retry["task_id"] == task["task_id"]
+    assert retry["attempt"] == 2
+
+
 def test_lease_expiry_retry_then_succeed(client):
     job = client.post("/v1/jobs", json=_atomic_job()).json()
     worker = _register(client)

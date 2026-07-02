@@ -219,6 +219,48 @@ def test_lease_expiry_fails_after_max_attempts(tmp_path):
     assert row["status"] == TaskStatus.FAILED.value
 
 
+def test_worker_reported_retriable_failure_requeues_running_task(tmp_path):
+    """The normal runtime-failure path: a worker starts a task (-> running) then
+    reports a retriable failure. It must requeue (running -> failed -> queued),
+    not raise IllegalTransition on a direct running -> queued."""
+    db = _make_db(tmp_path)
+    job_id = db.create_job(_job())
+    task_ids = db.create_tasks_for_job(job_id, _job())
+    worker = db.register_worker(WorkerRegister(slots_total=1))
+
+    leased = db.lease_next_task(worker, lease_ttl_s=3600)
+    db.start_task(leased.task_id, worker)  # -> running
+
+    updated = db.fail_task(task_ids[0], worker, "runner boom", retriable=True)
+    assert updated["status"] == TaskStatus.QUEUED.value
+    assert updated["worker_id"] is None
+    assert updated["lease_expires_at"] is None
+    assert updated["error"] == "runner boom"
+
+    # Slot is freed, so the same worker can pick it up again with a higher attempt.
+    retry = db.lease_next_task(worker, lease_ttl_s=60)
+    assert retry is not None
+    assert retry.task_id == task_ids[0]
+    assert retry.attempt == 2
+
+
+def test_worker_reported_failure_is_terminal_after_max_attempts(tmp_path):
+    """A failure with no attempts left ends in failed, and is not re-leased."""
+    db = _make_db(tmp_path)
+    req = _job()
+    req.retry.max_attempts = 1
+    job_id = db.create_job(req)
+    task_ids = db.create_tasks_for_job(job_id, req)
+    worker = db.register_worker(WorkerRegister(slots_total=1))
+
+    leased = db.lease_next_task(worker, lease_ttl_s=3600)
+    db.start_task(leased.task_id, worker)  # -> running (attempt 1 == max)
+
+    updated = db.fail_task(task_ids[0], worker, "boom", retriable=True)
+    assert updated["status"] == TaskStatus.FAILED.value
+    assert db.lease_next_task(worker, 60) is None  # not requeued
+
+
 def test_slots_not_oversubscribed_after_dead_and_revive(tmp_path):
     """Regression: slot count is derived from the task table, so a worker that is
     marked dead (while a task is still in-flight) and then revives via heartbeat
