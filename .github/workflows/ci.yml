@@ -11,6 +11,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Detect new secrets
+        run: git ls-files -z | xargs -0 uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline
+      - name: Reject token-shaped CLI examples
+        run: python3 scripts/secret_shape_guard.py
+
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
