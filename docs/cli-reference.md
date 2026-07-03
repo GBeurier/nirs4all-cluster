@@ -22,8 +22,8 @@ Run the coordinator (and the `/ui` dashboard).
   admin** principal. When neither `--token` nor any principal is set the server runs
   **open (dev mode)**.
 
-`--principal <principal-spec>` (repeatable)
-: a credential-bound RBAC principal. A principal spec contains a name, a bearer
+`--principal` (repeatable)
+: a credential-bound RBAC principal. The argument contains a name, a bearer
   token, and one or more roles separated by colons. Roles are `submitter`,
   `executor`, `viewer`, `admin` (comma-separate to combine); they grant rights from
   `{submit, read, cancel, execute, admin}`. Any principal switches the server into
