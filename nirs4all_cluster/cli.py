@@ -359,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--principal",
         action="append",
         metavar="NAME:TOKEN:ROLES",
-        help="credential-bound RBAC principal, e.g. --principal alice:s3cr3t:submitter "
+        help="credential-bound RBAC principal in NAME:TOKEN:ROLES format "
              "(roles: submitter,executor,viewer,admin; comma-separate to combine; repeatable)",
     )
     p_server.add_argument(
