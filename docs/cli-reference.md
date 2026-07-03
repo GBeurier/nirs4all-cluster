@@ -23,10 +23,10 @@ Run the coordinator (and the `/ui` dashboard).
   **open (dev mode)**.
 
 `--principal NAME:TOKEN:ROLES` (repeatable)
-: a credential-bound RBAC principal, e.g. `--principal alice:s3cr3t:submitter`. Roles
-  are `submitter`, `executor`, `viewer`, `admin` (comma-separate to combine); they
-  grant rights from `{submit, read, cancel, execute, admin}`. Any principal switches
-  the server into enforced mode.
+: a credential-bound RBAC principal in `NAME:TOKEN:ROLES` format. Roles are
+  `submitter`, `executor`, `viewer`, `admin` (comma-separate to combine); they grant
+  rights from `{submit, read, cancel, execute, admin}`. Any principal switches the
+  server into enforced mode.
 
 `--auth-file`
 : JSON file of `[{"name","token","roles":[...]}]` principals (alternative to repeating
