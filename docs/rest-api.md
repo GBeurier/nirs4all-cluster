@@ -1,7 +1,7 @@
 # REST & WebSocket API
 
 All `/v1` endpoints are gated by **credential-bound rights** when the server is
-configured with principals (`--principal <principal-spec>` / `--auth-file`) or a
+configured with principals (`--principal` / `--auth-file`) or a
 legacy `--token` (kept as a single all-rights admin). With neither configured the
 server runs **open (dev mode)**. Every `/v1` request/response also carries the
 version handshake headers (`X-N4C-Version`, `X-N4C-Api`, `X-N4C-Role`) — see
