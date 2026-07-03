@@ -120,7 +120,7 @@ def _run_job_from_args(args: argparse.Namespace) -> Any:
 
 
 def _load_principals(specs: list[str] | None, auth_file: str | None) -> list[Any]:
-    """Build RBAC principals from ``--principal NAME:TOKEN:ROLES`` and/or ``--auth-file`` JSON.
+    """Build RBAC principals from ``--principal`` entries and/or ``--auth-file`` JSON.
 
     Raises ``ValueError`` on a malformed spec or unknown role so the server fails
     fast at startup rather than silently granting nothing.
@@ -132,10 +132,10 @@ def _load_principals(specs: list[str] | None, auth_file: str | None) -> list[Any
         name, sep, rest = spec.partition(":")
         token, sep2, roles_csv = rest.partition(":")
         if not (name and sep and token):
-            raise ValueError(f"--principal must be NAME:TOKEN:ROLES (got {spec!r})")
+            raise ValueError(f"RBAC principal spec must contain name, token, and roles separated by ':' (got {spec!r})")
         roles = [r.strip() for r in roles_csv.split(",") if r.strip()]
         if not roles:
-            raise ValueError(f"--principal {name!r} needs at least one role")
+            raise ValueError(f"RBAC principal {name!r} needs at least one role")
         principals.append(Principal(name=name, token=token, rights=rights_from_roles(roles)))
     if auth_file:
         entries = json.loads(Path(auth_file).read_text(encoding="utf-8"))
@@ -358,9 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_server.add_argument(
         "--principal",
         action="append",
-        metavar="NAME:TOKEN:ROLES",
-        help="credential-bound RBAC principal in NAME:TOKEN:ROLES format "
-             "(roles: submitter,executor,viewer,admin; comma-separate to combine; repeatable)",
+        metavar="PRINCIPAL_SPEC",
+        help=(
+            "credential-bound RBAC principal as name/token/roles separated by ':' "
+            "(roles: submitter,executor,viewer,admin; comma-separate to combine; repeatable)"
+        ),
     )
     p_server.add_argument(
         "--auth-file",
