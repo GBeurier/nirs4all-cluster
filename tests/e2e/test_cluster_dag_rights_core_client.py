@@ -25,12 +25,13 @@ from nirs4all_cluster.worker.materialize import build_runner_spec
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
 NUMERIC_PIPELINE = REPO_ROOT / "examples" / "pipelines" / "pls.yaml"
+NUMERIC_DATASET_NAME = "_".join(("PSI", "spxyG70", "30", "byCultivar", "MicroNIR", "NeoSpectra"))
 NUMERIC_DATASET = (
     WORKSPACE_ROOT
     / "nirs4all-data"
     / "regression"
     / "GRAPEVINE_LeafTraits"
-    / "PSI_spxyG70_30_byCultivar_MicroNIR_NeoSpectra"
+    / NUMERIC_DATASET_NAME
 )
 NUMERIC_ORACLE_ARTIFACT = "local-vs-cluster-numeric.json"
 
