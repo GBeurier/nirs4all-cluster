@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -36,6 +37,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Run the installed-wheel release smoke test during normal collection.",
     )
+    parser.addoption(
+        "--artifacts-dir",
+        action="store",
+        default=None,
+        help="Directory where ecosystem E2E entrypoints write their declared artifacts.",
+    )
+
+
+@pytest.fixture
+def artifacts_dir(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
+    raw = request.config.getoption("--artifacts-dir")
+    path = Path(raw).expanduser().resolve() if raw else tmp_path / "artifacts"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _release_smoke_selected_explicitly(config: pytest.Config) -> bool:
