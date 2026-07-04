@@ -131,7 +131,18 @@ def _run_numeric_oracle(
 
     workdir = tmp_path / "numeric-oracle-worker" / task.task_id
     spec = build_runner_spec(task, workdir, worker.download_artifact)
-    execution = execute_task(spec, workdir, python_exe=sys.executable, poll_interval=0.2)
+    pythonpath_entries = [str(REPO_ROOT), str(WORKSPACE_ROOT / "nirs4all")]
+    previous_pythonpath = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        [*pythonpath_entries, *([previous_pythonpath] if previous_pythonpath else [])]
+    )
+    try:
+        execution = execute_task(spec, workdir, python_exe=sys.executable, poll_interval=0.2)
+    finally:
+        if previous_pythonpath is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = previous_pythonpath
     if execution.result.get("status") != "succeeded":
         log_tail = execution.log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
         raise AssertionError(f"numeric oracle cluster task failed: {execution.result!r}\n{log_tail}")
