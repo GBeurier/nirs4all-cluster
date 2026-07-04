@@ -29,6 +29,26 @@ FORBIDDEN = [
         re.compile(r"(?<![\w-])--token\s+\$\{?N4CLUSTER_TOKEN\}?"),
     ),
     (
+        "concrete --token literal example",
+        re.compile(
+            r"(?<![\w-])--token\s+"
+            r"(?!<[^>\s]+>)"
+            r"(?![A-Z_][A-Z0-9_]*\b)"
+            r"(?!\$\{?[A-Z_][A-Z0-9_]*\}?)"
+            r"[A-Za-z0-9][A-Za-z0-9_.:=/@+-]{11,}"
+        ),
+    ),
+    (
+        "literal N4CLUSTER_TOKEN assignment",
+        re.compile(
+            r"\bN4CLUSTER_TOKEN\s*=\s*[\"']?"
+            r"(?!<[^>\s]+>)"
+            r"(?![A-Z_][A-Z0-9_]*\b)"
+            r"(?!\$\{?[A-Z_][A-Z0-9_]*\}?)"
+            r"[A-Za-z0-9][A-Za-z0-9_.:=/@+-]{11,}"
+        ),
+    ),
+    (
         "token-shaped example literal",
         re.compile(r"\b(?:" + "|".join(re.escape(value) for value in TOKEN_SHAPED_LITERALS) + r")\b", re.IGNORECASE),
     ),
