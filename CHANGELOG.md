@@ -4,6 +4,33 @@ All notable changes to `nirs4all-cluster` are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — unreleased
+
+Hardening release accumulated on top of the 0.1.0 beta (not yet tagged). No breaking
+changes to the wire contract or public API.
+
+### Added
+- **Credential-scoped RBAC**: per-credential rights, a DAG rights-provenance contract, and
+  worker lifecycle bound to the issuing principal.
+- **Core `nirs4all.run` adapter** and typed client/worker transport errors.
+- **`version-guard` CI** workflow blocking a manifest version ahead of the latest release tag.
+- Reproducible installs/CI via a tracked `uv.lock`.
+
+### Changed
+- Scheduler attests the inferred job shape; the server attests scheduler shape from the job payload.
+
+### Fixed
+- Balanced same-priority lease assignment across workers.
+- Requeue running-task failures through the `failed` state; deterministic DAG worker-loss handling.
+
+### Security
+- Documentation and CI hardening: removed literal cluster credentials / token-shaped examples and
+  added `scripts/secret_shape_guard.py` to block token-shaped CLI examples in CI.
+
+### Tests
+- RBAC rights, artifact and WebSocket boundary coverage; distributed-parity harness; real-DAG
+  parity; installed-wheel release smoke; end-to-end rights-handoff proof.
+
 ## [0.1.0] — 2026-06-16
 
 First **beta** release. The project graduates from a `0.0.x` validation prototype to a

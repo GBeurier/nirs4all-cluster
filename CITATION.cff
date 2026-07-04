@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "nirs4all-cluster"
+abstract: >-
+  A trusted-LAN beta distributed job queue (client / server / polling workers)
+  for nirs4all.run(), part of the nirs4all ecosystem.
+type: software
+authors:
+  - name: "The nirs4all authors"
+repository-code: "https://github.com/GBeurier/nirs4all-cluster"
+url: "https://nirs4all.org"
+license:
+  - CeCILL-2.1
+  - AGPL-3.0-or-later
+version: "0.1.1"
+keywords:
+  - NIRS
+  - spectroscopy
+  - distributed-computing
+  - job-queue
+  - machine-learning
