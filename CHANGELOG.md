@@ -4,9 +4,9 @@ All notable changes to `nirs4all-cluster` are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] — unreleased
+## [0.1.2] — 2026-07-04
 
-Hardening release accumulated on top of the 0.1.0 beta (not yet tagged). No breaking
+Hardening release accumulated on top of the 0.1.0 beta. No breaking
 changes to the wire contract or public API.
 
 ### Added

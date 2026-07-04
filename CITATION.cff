@@ -12,7 +12,7 @@ url: "https://nirs4all.org"
 license:
   - CeCILL-2.1
   - AGPL-3.0-or-later
-version: "0.1.1"
+version: "0.1.2"
 keywords:
   - NIRS
   - spectroscopy
