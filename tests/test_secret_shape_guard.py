@@ -42,22 +42,24 @@ def test_secret_shape_guard_allows_placeholders_and_variables(monkeypatch, tmp_p
 
 
 def test_secret_shape_guard_rejects_literal_cli_token(monkeypatch, tmp_path: Path, capsys) -> None:
+    literal = "abcdefgh" + "ijklmnop"
     status = _run_guard(
         monkeypatch,
         tmp_path,
-        "n4cluster server --token abcdefghijklmnop --state ./state\n",
+        f"n4cluster server --token {literal} --state ./state\n",
     )
 
     captured = capsys.readouterr()
     assert status == 1
     assert "concrete --token literal example" in captured.err
-    assert "abcdefghijklmnop" not in captured.err
+    assert literal not in captured.err
 
 
 def test_secret_shape_guard_rejects_literal_env_token(monkeypatch, tmp_path: Path, capsys) -> None:
-    status = _run_guard(monkeypatch, tmp_path, 'N4CLUSTER_TOKEN="abcdefghijklmnop"\n')
+    literal = "abcdefgh" + "ijklmnop"
+    status = _run_guard(monkeypatch, tmp_path, f'N4CLUSTER_TOKEN="{literal}"\n')
 
     captured = capsys.readouterr()
     assert status == 1
     assert "literal N4CLUSTER_TOKEN assignment" in captured.err
-    assert "abcdefghijklmnop" not in captured.err
+    assert literal not in captured.err
