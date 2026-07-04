@@ -23,7 +23,8 @@ GitHub Release is published (or via `workflow_dispatch`). Pushing to `main` neve
 
 ## Post-release
 
-- [ ] `pip install nirs4all-cluster==X.Y.Z` in a clean venv; smoke `n4cluster --version`.
+- [ ] `pip install nirs4all-cluster==X.Y.Z` in a clean venv; smoke `n4cluster --help` and
+      `python -c "import nirs4all_cluster as m; print(m.__version__)"`.
 - [ ] Start the next `## [Unreleased]` CHANGELOG section.
 
 ## Notes / residual risks

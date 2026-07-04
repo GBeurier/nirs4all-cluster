@@ -7,8 +7,14 @@ network** (a lab, a CI runner pool, a single operator's machines). It is **not**
 for the open internet or for untrusted multi-tenant use. By design (see
 `PROTOTYPE_DESIGN.md` §Non-goals and `PROTOTYPE_TO_PRODUCTION.md` §4) it currently provides:
 
-- **A single static bearer token** for authentication — no mTLS, no OIDC, no per-identity
-  credentials, no token rotation.
+- **Static bearer-token authentication with optional credential-bound RBAC.** Each principal
+  is a named identity bound to a static token and granted rights from
+  `{submit, read, cancel, execute, admin}` (composed into `submitter` / `executor` /
+  `viewer` / `admin` roles); rights derive from the credential, never from the advisory
+  `X-N4C-Role` header. A bare `--token` remains a single all-rights admin principal, and with
+  neither a token nor principals the server runs open (dev mode). Still **no mTLS, no OIDC, no
+  token rotation** — tokens are shared secrets, only safe on a trusted LAN. See
+  `docs/security-and-scope.md`.
 - **No sandbox** for the work it runs. A worker executes `nirs4all.run()` in a subprocess
   with the worker's own privileges. `python_entrypoint` jobs run **arbitrary Python** and
   are therefore gated behind **both** the server's `--allow-python-jobs` and the worker's
