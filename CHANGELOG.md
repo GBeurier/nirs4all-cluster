@@ -4,6 +4,12 @@ All notable changes to `nirs4all-cluster` are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-07-06
+
+### Security
+- Extend the cluster secret-shape guard to reject literal CLI token examples while keeping test
+  fixtures non-token-shaped.
+
 ## [0.1.2] — 2026-07-04
 
 Hardening release accumulated on top of the 0.1.0 beta. No breaking
