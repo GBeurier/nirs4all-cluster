@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,3 +83,20 @@ def test_secret_shape_guard_rejects_literal_env_token(monkeypatch, tmp_path: Pat
     assert status == 1
     assert "literal N4CLUSTER_TOKEN assignment" in captured.err
     assert literal not in captured.err
+
+
+def test_secret_shape_guard_passes_on_the_tracked_tree() -> None:
+    """The live repo must stay free of token-shaped CLI examples (the GitGuardian gate).
+
+    The other tests use synthetic fixtures via ``_tracked_files`` monkeypatching;
+    this one runs the guard exactly as the pre-commit hook / CI does — over the
+    real ``git ls-files`` tree from the repo root — so the pytest green gate, not
+    only CI, fails if a realistic-looking credential ever lands in a tracked file.
+    """
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "secret_shape_guard.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -37,6 +37,26 @@ The server also persists additive scheduler/rights metadata:
 `shared_path`, `artifact`, `worker_local` (today behaves like `shared_path`), and
 `catalog` (a `nirs4all-datasets` id/DOI — **not implemented** in the beta worker).
 
+## Runtime requirement & mixed fleets
+
+Every task runs a whole `nirs4all.run()` in a worker subprocess, so a task may only
+land on a worker that can *prove* the runtime. On submission the server attests a
+package-availability requirement for `nirs4all.run` jobs:
+
+- If you pin nothing, the server injects a **presence-only** requirement
+  (`requirements.packages.nirs4all == ""`): any declared version qualifies, and a
+  worker that never declared `nirs4all` is **never** leased the task (fail-closed).
+- Pin a range in `requirements.packages.nirs4all` (e.g. `">=0.9,<0.10"`) to constrain
+  routing to a compatible library — the server preserves your pin, it does not
+  overwrite it.
+- Pinning *other* packages (extra fleet capabilities such as `torch`) **composes with**
+  the mandatory `nirs4all` presence rather than replacing it; a worker must declare
+  every pinned package to be eligible.
+
+Because eligibility is decided from what a worker declares at registration, a fleet can
+mix plain `nirs4all` workers with richer runtimes: routing stays correct, and a worker
+that cannot prove the required packages is simply passed over.
+
 ## Examples
 
 ```{literalinclude} ../examples/job.shared-path.yaml
