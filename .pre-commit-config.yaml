@@ -1,4 +1,4 @@
-# Local dev hooks mirroring the CI green gate (ruff check + hygiene).
+# Local dev hooks mirroring the CI green gate (ruff + secret hygiene).
 # Install: uvx pre-commit install    Run all: uvx pre-commit run --all-files
 # mypy is run in CI (needs the full dev environment); not duplicated here.
 repos:
@@ -18,3 +18,16 @@ repos:
     hooks:
       - id: ruff
         name: ruff (lint)
+
+  - repo: local
+    hooks:
+      - id: detect-secrets-baseline
+        name: detect-secrets (baseline)
+        entry: uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline
+        language: system
+        types: [text]
+      - id: secret-shape-guard
+        name: secret-shape guard
+        entry: python3 scripts/secret_shape_guard.py
+        language: system
+        pass_filenames: false

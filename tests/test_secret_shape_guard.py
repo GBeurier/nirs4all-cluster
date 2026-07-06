@@ -31,6 +31,8 @@ def test_secret_shape_guard_allows_placeholders_and_variables(monkeypatch, tmp_p
             "\n".join(
                 [
                     "n4cluster server --token <auth-token>",
+                    "n4cluster server --principal <principal-spec>",
+                    "n4cluster server --principal NAME:TOKEN:ROLES",
                     "n4cluster worker --token TOKEN",
                     "N4CLUSTER_TOKEN=<auth-token>",
                     "N4CLUSTER_TOKEN=$TOKEN_FROM_SECRET_MANAGER",
@@ -52,6 +54,22 @@ def test_secret_shape_guard_rejects_literal_cli_token(monkeypatch, tmp_path: Pat
     captured = capsys.readouterr()
     assert status == 1
     assert "concrete --token literal example" in captured.err
+    assert literal not in captured.err
+
+
+def test_secret_shape_guard_rejects_literal_principal(monkeypatch, tmp_path: Path, capsys) -> None:
+    literal = "abcdefgh" + "ijklmnop"
+    prefix = "n4cluster server --" + "principal "
+    suffix = ":viewer\n"
+    status = _run_guard(
+        monkeypatch,
+        tmp_path,
+        prefix + "submitter:" + literal + suffix,
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "concrete --principal credential example" in captured.err
     assert literal not in captured.err
 
 

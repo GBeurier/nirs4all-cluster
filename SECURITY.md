@@ -30,6 +30,24 @@ What is **out of scope** for this beta (tracked for a future production track): 
 OIDC, per-task container sandboxing and quotas, encryption/retention of artifacts, and
 multi-tenant isolation. Do not rely on this software for any of those properties.
 
+## If a token-shaped value lands in git history
+
+Treat any committed bearer token or `--principal` credential as exposed, even if it only
+appeared in docs, examples, or a private branch.
+
+1. Revoke or rotate the affected token(s) first. If the exposure was a `--principal`
+   example, rotate every principal token present in the string before any cleanup.
+2. Replace the committed value with placeholders such as `<auth-token>` and
+   `<principal-spec>`, or load credentials from a shell variable / secret manager.
+3. If the value reached published history, scrub that history and any generated docs or
+   release artifacts that embedded it.
+4. Re-run the repo secret gates before pushing the remediation:
+   `git ls-files -z | xargs -0 uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline`
+   and `python3 scripts/secret_shape_guard.py`.
+
+The secret-shape guard exists specifically to reject token-shaped CLI examples before they
+reach history. Keep examples schematic; never commit a realistic-looking credential.
+
 ## Reporting a vulnerability
 
 Please report security issues **privately** — do not open a public GitHub issue.
