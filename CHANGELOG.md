@@ -4,6 +4,16 @@ All notable changes to `nirs4all-cluster` are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-07-07
+
+### Added
+- Add regression coverage for mixed-fleet runtime requirement routing contracts.
+- Document job-spec shape inference for runtime-aware scheduling.
+
+### Security
+- Tighten repository secret-exposure guardrails after the GitGuardian alert on
+  token-shaped CLI examples.
+
 ## [0.1.3] — 2026-07-06
 
 ### Security

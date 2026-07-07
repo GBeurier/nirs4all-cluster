@@ -8,7 +8,7 @@ The package is intentionally thin: it orchestrates jobs and moves artifacts,
 but never reimplements ``nirs4all`` logic (the worker imports it lazily).
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from .client import ClusterClient, ServerInfo, build_nirs4all_run_request
 from .client_errors import (
