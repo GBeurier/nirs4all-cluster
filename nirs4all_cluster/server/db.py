@@ -151,10 +151,7 @@ class Database:
 
     def _migrate_schema(self) -> None:
         """Apply additive migrations for SQLite files created by older betas."""
-        worker_cols = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(workers)").fetchall()
-        }
+        worker_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(workers)").fetchall()}
         if "principal" not in worker_cols:
             self._conn.execute("ALTER TABLE workers ADD COLUMN principal TEXT")
 
@@ -209,6 +206,8 @@ class Database:
                     payload["scheduler"] = req.scheduler.model_dump()
                 if req.submission is not None:
                     payload["submission"] = req.submission.model_dump()
+                if req.native_payload is not None:
+                    payload["native_payload"] = req.native_payload.model_dump()
                 conn.execute(
                     "INSERT INTO tasks(id, job_id, status, attempt, max_attempts, priority, "
                     "created_at, updated_at, dataset_label, pipeline_label, requirements_json, "
@@ -370,9 +369,7 @@ class Database:
     def list_tasks_for_job(self, job_id: str) -> list[sqlite3.Row]:
         with self._lock:
             return list(
-                self._conn.execute(
-                    "SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
-                ).fetchall()
+                self._conn.execute("SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at ASC", (job_id,)).fetchall()
             )
 
     def _set_task_status(
@@ -468,16 +465,12 @@ class Database:
                 raise KeyError(task_id)
             if row["worker_id"] != worker_id:
                 raise PermissionError("task leased by another worker")
-            updated = self._set_task_status(
-                self._conn, task_id, TaskStatus.SUCCEEDED, result_json=json.dumps(result)
-            )
+            updated = self._set_task_status(self._conn, task_id, TaskStatus.SUCCEEDED, result_json=json.dumps(result))
             self._sync_slots(worker_id)
             self._conn.commit()
             return updated
 
-    def fail_task(
-        self, task_id: str, worker_id: str | None, error: str, *, retriable: bool = True
-    ) -> sqlite3.Row:
+    def fail_task(self, task_id: str, worker_id: str | None, error: str, *, retriable: bool = True) -> sqlite3.Row:
         """Worker-reported failure. Requeue if attempts remain and retriable.
 
         A report from a worker that no longer owns the task (it was reaped and
@@ -780,9 +773,7 @@ class Database:
 
     def clear_job_artifact_role(self, job_id: str, role: str) -> None:
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM job_artifacts WHERE job_id = ? AND role = ?", (job_id, role)
-            )
+            self._conn.execute("DELETE FROM job_artifacts WHERE job_id = ? AND role = ?", (job_id, role))
             self._conn.commit()
 
     def list_job_artifacts(self, job_id: str) -> list[sqlite3.Row]:
@@ -831,9 +822,7 @@ class Database:
     def list_recent_events(self, limit: int = 200) -> list[sqlite3.Row]:
         """The most recent events across all jobs, oldest-first (global stream replay)."""
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
+            rows = self._conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return list(reversed(rows))
 
 
@@ -869,16 +858,19 @@ def _pipeline_label(pipeline: PipelineRef) -> str:
 
 def _payload_from_row(row: sqlite3.Row) -> TaskPayload:
     payload = json.loads(row["payload_json"])
-    return TaskPayload(
-        task_id=row["id"],
-        job_id=row["job_id"],
-        type=payload["type"],
-        attempt=row["attempt"],
-        pipeline=PipelineRef.model_validate(payload["pipeline"]),
-        dataset=DatasetRef.model_validate(payload["dataset"]),
-        params=payload.get("params", {}),
-        outputs=Outputs.model_validate(payload.get("outputs", {})),
-        scheduler=payload.get("scheduler"),
-        submission=payload.get("submission"),
-        lease_expires_at=row["lease_expires_at"],
+    return TaskPayload.model_validate(
+        {
+            "task_id": row["id"],
+            "job_id": row["job_id"],
+            "type": payload["type"],
+            "attempt": row["attempt"],
+            "pipeline": PipelineRef.model_validate(payload["pipeline"]),
+            "dataset": DatasetRef.model_validate(payload["dataset"]),
+            "params": payload.get("params", {}),
+            "outputs": Outputs.model_validate(payload.get("outputs", {})),
+            "scheduler": payload.get("scheduler"),
+            "submission": payload.get("submission"),
+            "native_payload": payload.get("native_payload") or payload.get("nativePayload"),
+            "lease_expires_at": row["lease_expires_at"],
+        }
     )

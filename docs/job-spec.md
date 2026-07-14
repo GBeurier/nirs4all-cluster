@@ -23,6 +23,35 @@ The server also persists additive scheduler/rights metadata:
 - stored `TaskResult.provenance` records the authenticated executor principal, worker id,
   job id, task id, attempt, and execute rights used to report the result.
 
+Studio/native submitters may also attach `nativePayload` (`NativeExperimentLaunchPayload`).
+The cluster beta treats it as a preserved launch manifest: it is validated at the boundary,
+stored with `request_json`, copied into every task payload, and returned to workers on lease.
+Scheduling still depends only on `pipeline`/`dataset`/`params`/`requirements`, and workers still
+run whole `nirs4all.run` tasks.
+
+When Studio requests spectral/OOD replay evidence publication, the native manifest carries
+`manifest.robustnessEvidencePublicationHandoff`. This block records the destination
+(`result_metadata.robustness_evidence`), fail-closed behavior, fields to publish
+(`prediction_arrays.X`, `result_metadata.robustness_evidence.X`,
+`result_metadata.robustness_evidence.predictor_bundle`), and accepted
+row-alignment strategies (`sample_indices`, full-dataset length, unique metadata identity, or
+explicit relation materialization identity). This is a materialization contract for native
+runners, not proof that replay evidence already exists or that a robustness report has been
+computed.
+
+The worker materializer passes this native payload into the subprocess runner spec. If the
+handoff is present, the `nirs4all.run` subprocess attempts a local workspace publication after
+model export: it reloads path-backed datasets through `DatasetConfigs`, opens the isolated task
+`WorkspaceStore`, selects row-aligned `X` by stored `sample_indices`, full-dataset row count, or
+explicit identity columns in `sample_metadata` /
+`result_metadata.relation_replay_manifest.materialization_manifest` /
+`result_metadata.relation_materialization_manifest`, then upserts `prediction_arrays.X` and
+`result_metadata.robustness_evidence.{X,predictor_bundle,publisher}`. After
+uploading artifacts, the worker enriches the same trace with
+`published_artifacts.predictor_bundle`. The trace remains fail-closed: non-path datasets,
+unloadable datasets, duplicate/missing identity values, missing model bundles, or unprovable row
+alignment keep the required fields under `missing` instead of declaring spectral/OOD replay ready.
+
 ## Pipeline references (`kind`)
 
 - `path` — a pipeline YAML readable on the worker (shared/worker-local filesystem).
@@ -86,6 +115,9 @@ that cannot prove the required packages is simply passed over.
 .. autoclass:: nirs4all_cluster.schemas.DistributedRunParity
 .. autoclass:: nirs4all_cluster.schemas.DagSchedulerContract
 .. autoclass:: nirs4all_cluster.schemas.JobSubmissionMetadata
+.. autoclass:: nirs4all_cluster.schemas.NativeExperimentLaunchPayload
+.. autoclass:: nirs4all_cluster.schemas.NativeExperimentLaunchPayloadManifest
+.. autoclass:: nirs4all_cluster.schemas.NativeRobustnessEvidencePublicationHandoff
 .. autoclass:: nirs4all_cluster.schemas.TaskAssignmentMetadata
 .. autoclass:: nirs4all_cluster.schemas.ResultProvenance
 .. autoclass:: nirs4all_cluster.schemas.JobView

@@ -52,6 +52,21 @@ rights in its `WorkerRegistered` response for executor self-diagnosis.
 | WS | `/v1/jobs/{id}/events/stream` | live events for one job (`?token=`) |
 | WS | `/v1/events/stream` | **global** live feed across all jobs/workers (`?token=`) |
 
+`POST /v1/jobs` accepts the optional Studio/native `nativePayload` field. The server validates
+and preserves it, then each worker lease returns the same payload under `task.nativePayload`.
+For `manifest.robustnessEvidencePublicationHandoff`, this means cluster/native runners can see
+the requested spectral/OOD evidence-publication contract before execution. It does not affect
+worker selection and it does not mark robustness replay evidence as present; readiness still
+requires the actual prediction arrays and predictor bundle published by the runner.
+
+When the current `nirs4all.run` subprocess sees that handoff, the completed `TaskResult.extra`
+contains `robustness_evidence_publication_trace`. This trace echoes the contract, records the
+exported predictor bundle path/artifact when available, and lists any required fields still
+missing. The beta runner publishes row-aligned `prediction_arrays.X` only when the task dataset
+is path-backed/reloadable and alignment is proven by `sample_indices`, full-dataset row count,
+or unique identifiers published in sample/relation materialization metadata; otherwise
+spectral/OOD replay remains blocked and the trace reports the skipped reason.
+
 ## Worker API
 
 | Method | Path | Purpose |

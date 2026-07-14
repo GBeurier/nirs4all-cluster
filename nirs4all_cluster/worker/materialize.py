@@ -72,8 +72,7 @@ def _materialize_dataset(ref: DatasetRef, inputs_dir: Path, download: DownloadFn
         # nirs4all_datasets.load()/resolve_config(); deferred in the prototype to
         # keep the worker free of that dependency. Use shared_path/artifact.
         raise NotImplementedError(
-            "dataset kind 'catalog' is not implemented in the prototype worker; "
-            "use 'shared_path' or 'artifact'"
+            "dataset kind 'catalog' is not implemented in the prototype worker; use 'shared_path' or 'artifact'"
         )
     raise ValueError(f"unsupported dataset kind: {ref.kind!r}")
 
@@ -83,7 +82,7 @@ def build_runner_spec(task: TaskPayload, workdir: Path, download: DownloadFn) ->
     inputs_dir.mkdir(parents=True, exist_ok=True)
     pipeline_spec = _materialize_pipeline(task.pipeline, inputs_dir, download)
     dataset_spec = _materialize_dataset(task.dataset, inputs_dir, download)
-    return {
+    spec = {
         "pipeline": pipeline_spec,
         "dataset": dataset_spec,
         "params": dict(task.params),
@@ -94,6 +93,9 @@ def build_runner_spec(task: TaskPayload, workdir: Path, download: DownloadFn) ->
         # any expected_fingerprint the client pinned).
         "pipeline_fingerprint": _pipeline_fingerprint(task.pipeline, pipeline_spec),
     }
+    if task.native_payload is not None:
+        spec["native_payload"] = task.native_payload.model_dump(by_alias=True)
+    return spec
 
 
 def _pipeline_fingerprint(ref: PipelineRef, spec: dict[str, Any]) -> str:
