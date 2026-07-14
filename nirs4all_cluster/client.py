@@ -148,6 +148,7 @@ def build_nirs4all_run_request(
     rank_mode: str = "min",
     idempotency_key: str | None = None,
     metric_tolerance_abs: float = 1e-6,
+    native_payload: dict[str, Any] | None = None,
 ) -> JobRequest:
     """Build the core/CLI-facing ``nirs4all.run`` cluster job contract.
 
@@ -183,6 +184,8 @@ def build_nirs4all_run_request(
         payload["outputs"] = outputs
     if retry is not None:
         payload["retry"] = retry
+    if native_payload is not None:
+        payload["native_payload"] = native_payload
     payload["parity"] = DistributedRunParity(
         scope="pipeline_dataset_matrix" if plural else "atomic",
         metric_tolerance_abs=metric_tolerance_abs,
@@ -208,9 +211,7 @@ class ClusterClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self._http = make_http_client(
-            self.base_url, token=token, role="client", timeout=timeout, transport=transport
-        )
+        self._http = make_http_client(self.base_url, token=token, role="client", timeout=timeout, transport=transport)
 
     def close(self) -> None:
         self._http.close()
@@ -267,6 +268,7 @@ class ClusterClient:
         rank_metric: str = "best_rmse",
         rank_mode: str = "min",
         idempotency_key: str | None = None,
+        native_payload: dict[str, Any] | None = None,
     ) -> JobView:
         return self.submit_nirs4all_run(
             pipeline=pipeline,
@@ -282,6 +284,7 @@ class ClusterClient:
             rank_metric=rank_metric,
             rank_mode=rank_mode,
             idempotency_key=idempotency_key,
+            native_payload=native_payload,
         )
 
     def submit_nirs4all_run(
@@ -304,6 +307,7 @@ class ClusterClient:
         rank_mode: str = "min",
         idempotency_key: str | None = None,
         metric_tolerance_abs: float = 1e-6,
+        native_payload: dict[str, Any] | None = None,
     ) -> JobView:
         """Submit a local ``nirs4all.run`` shaped job through the cluster adapter."""
         return self.submit(
@@ -325,6 +329,7 @@ class ClusterClient:
                 rank_mode=rank_mode,
                 idempotency_key=idempotency_key,
                 metric_tolerance_abs=metric_tolerance_abs,
+                native_payload=native_payload,
             )
         )
 
