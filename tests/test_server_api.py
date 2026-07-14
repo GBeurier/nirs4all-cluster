@@ -80,6 +80,33 @@ def _atomic_job(pipeline="/shared/pls.yaml", dataset="/shared/corn"):
     }
 
 
+def _native_payload():
+    return {
+        "legacyConfig": {"name": "Cluster Robustness Experiment", "dataset_ids": ["d1"], "pipeline_ids": ["p1"]},
+        "manifest": {
+            "version": "studio.native-launch-payload.v1",
+            "robustnessEvidencePublicationHandoff": {
+                "kind": "robustness_evidence_publication_handoff",
+                "requested": True,
+                "destination": "result_metadata.robustness_evidence",
+                "failClosed": True,
+                "alignmentStrategies": [
+                    "sample_indices",
+                    "full_dataset_length",
+                    "unique_metadata_identity",
+                    "relation_manifest_identity",
+                ],
+                "publishedFields": [
+                    "prediction_arrays.X",
+                    "result_metadata.robustness_evidence.X",
+                    "result_metadata.robustness_evidence.predictor_bundle",
+                ],
+            },
+        },
+        "strictCampaignSpecs": {"splitSpecs": [], "skippedRunIds": []},
+    }
+
+
 def test_health(client):
     assert client.get("/").json()["ok"] is True
 
@@ -171,6 +198,36 @@ def test_atomic_job_full_lifecycle(client):
     assert job["aggregate"]["num_succeeded"] == 1
     assert job["aggregate"]["best_metric"] == 0.42
     assert len(job["aggregate"]["ranking"]) == 1
+
+
+def test_native_payload_robustness_handoff_survives_submit_and_lease(client):
+    req = _atomic_job()
+    req["nativePayload"] = _native_payload()
+
+    job = client.post("/v1/jobs", json=req).json()
+    worker = _register(client)
+    task = _lease(client, worker)
+
+    assert task["nativePayload"]["manifest"]["robustnessEvidencePublicationHandoff"] == {
+        "kind": "robustness_evidence_publication_handoff",
+        "requested": True,
+        "destination": "result_metadata.robustness_evidence",
+        "failClosed": True,
+        "alignmentStrategies": [
+            "sample_indices",
+            "full_dataset_length",
+            "unique_metadata_identity",
+            "relation_manifest_identity",
+        ],
+        "publishedFields": [
+            "prediction_arrays.X",
+            "result_metadata.robustness_evidence.X",
+            "result_metadata.robustness_evidence.predictor_bundle",
+        ],
+    }
+    stored = client.app.state.db.get_job(job["id"])["request_json"]
+    assert "native_payload" in stored
+    assert "robustness_evidence_publication_handoff" in stored
 
 
 def test_matrix_decomposition_and_ranking(client):

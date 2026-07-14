@@ -95,8 +95,13 @@ class WorkerAgent:
         overwritten.
         """
         if self.gpu_count_override is not None:
-            gpu = {"cuda": self.gpu_count_override > 0, "gpu_count": self.gpu_count_override,
-                   "gpu_names": [], "cuda_version": None, "driver_version": None}
+            gpu = {
+                "cuda": self.gpu_count_override > 0,
+                "gpu_count": self.gpu_count_override,
+                "gpu_names": [],
+                "cuda_version": None,
+                "driver_version": None,
+            }
         else:
             gpu = _detect_gpu()
         self.capabilities.setdefault("cuda", gpu["cuda"])
@@ -259,6 +264,12 @@ class WorkerAgent:
             zipped = self._zip_dir(exec_result.workspace_path, exec_result.workspace_path.parent / "workspace.zip")
             artifacts["workspace"] = self._upload(task.task_id, zipped, role="workspace", kind="workspace")
 
+        extra = summary.get("extra", {})
+        if isinstance(extra, dict):
+            self._attach_robustness_artifact_refs(extra, artifacts)
+        else:
+            extra = {}
+
         result = TaskResult(
             status="succeeded",
             nirs4all_version=summary.get("nirs4all_version"),
@@ -267,7 +278,7 @@ class WorkerAgent:
             metrics=RunMetrics(**(summary.get("metrics") or {})),
             counts=summary.get("counts", {}),
             artifacts=artifacts,
-            extra=summary.get("extra", {}),
+            extra=extra,
         )
         logger.info("task %s succeeded (%.1fs)", task.task_id, result.duration_seconds)
         self._http.post(
@@ -277,7 +288,9 @@ class WorkerAgent:
         )
 
     def _report_fail(self, task: TaskPayload, error: str, *, retriable: bool) -> None:
-        logger.warning("task %s failed (retriable=%s): %s", task.task_id, retriable, error.splitlines()[0] if error else "")
+        logger.warning(
+            "task %s failed (retriable=%s): %s", task.task_id, retriable, error.splitlines()[0] if error else ""
+        )
         failure = TaskFailure(error=error[:4000], retriable=retriable)
         try:
             self._http.post(
@@ -287,6 +300,20 @@ class WorkerAgent:
             )
         except httpx.HTTPError:
             pass
+
+    @staticmethod
+    def _attach_robustness_artifact_refs(extra: dict[str, Any], artifacts: dict[str, str | None]) -> None:
+        trace = extra.get("robustness_evidence_publication_trace")
+        if not isinstance(trace, dict):
+            return
+        published_artifacts = trace.setdefault("published_artifacts", {})
+        if not isinstance(published_artifacts, dict):
+            published_artifacts = {}
+            trace["published_artifacts"] = published_artifacts
+        if artifacts.get("model"):
+            published_artifacts["predictor_bundle"] = artifacts["model"]
+        if artifacts.get("workspace"):
+            published_artifacts["workspace"] = artifacts["workspace"]
 
     def _emit_progress(self, task: TaskPayload, elapsed: float) -> None:
         try:

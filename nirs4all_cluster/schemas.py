@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # --------------------------------------------------------------------------- #
 # Enums / state machines
@@ -198,6 +198,60 @@ class DagSchedulerContract(BaseModel):
     execute_rights_required: list[str] = Field(default_factory=lambda: ["execute"])
 
 
+class NativeRobustnessEvidencePublicationHandoff(BaseModel):
+    """Studio/native handoff for publishing spectral/OOD replay evidence.
+
+    This is transport metadata only. Cluster workers still execute whole
+    ``nirs4all.run`` calls; the handoff tells future/native runners which
+    prediction-array evidence must be materialized before downstream robustness
+    replay can become ready.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    kind: Literal["robustness_evidence_publication_handoff"]
+    requested: bool
+    destination: str
+    fail_closed: bool = Field(alias="failClosed")
+    alignment_strategies: list[
+        Literal[
+            "sample_indices",
+            "full_dataset_length",
+            "unique_metadata_identity",
+            "relation_manifest_identity",
+        ]
+    ] = Field(alias="alignmentStrategies")
+    published_fields: list[str] = Field(alias="publishedFields")
+
+
+class NativeExperimentLaunchPayloadManifest(BaseModel):
+    """Native launch manifest carried from Studio to cluster/WASM submitters."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    version: str | None = None
+    robustness_evidence_publication_handoff: NativeRobustnessEvidencePublicationHandoff | None = Field(
+        default=None,
+        alias="robustnessEvidencePublicationHandoff",
+    )
+
+
+class NativeExperimentLaunchPayload(BaseModel):
+    """Optional Studio-native payload preserved alongside a cluster job.
+
+    The beta scheduler does not interpret this payload for placement. It is
+    persisted and leased to workers so native submitters/runners can see the
+    same launch manifest Studio produced, including robustness evidence
+    publication requirements.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    legacy_config: dict[str, Any] | None = Field(default=None, alias="legacyConfig")
+    manifest: NativeExperimentLaunchPayloadManifest = Field(default_factory=NativeExperimentLaunchPayloadManifest)
+    strict_campaign_specs: dict[str, Any] | None = Field(default=None, alias="strictCampaignSpecs")
+
+
 class TaskAssignmentMetadata(BaseModel):
     """Server-requested execution metadata returned on a worker lease."""
 
@@ -249,6 +303,8 @@ class JobRequest(BaseModel):
     into one task per (pipeline, dataset) combination (design Level 1).
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     type: Literal["nirs4all.run"] = "nirs4all.run"
     name: str | None = None
     priority: int = 0
@@ -276,6 +332,11 @@ class JobRequest(BaseModel):
     # before persistence, so rights fields remain server-attested.
     scheduler: DagSchedulerContract | None = None
     submission: JobSubmissionMetadata | None = None
+
+    # Optional Studio/native payload. The server preserves it for traceability
+    # and task leases, but scheduling/execution remain driven by the explicit
+    # pipeline/dataset/params fields above.
+    native_payload: NativeExperimentLaunchPayload | None = Field(default=None, alias="nativePayload")
 
     idempotency_key: str | None = None
 
@@ -343,6 +404,8 @@ class HeartbeatAck(BaseModel):
 class TaskPayload(BaseModel):
     """Everything a worker needs to execute a task. Returned by /lease."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     task_id: str
     job_id: str
     type: str
@@ -354,6 +417,7 @@ class TaskPayload(BaseModel):
     scheduler: DagSchedulerContract | None = None
     submission: JobSubmissionMetadata | None = None
     assignment: TaskAssignmentMetadata | None = None
+    native_payload: NativeExperimentLaunchPayload | None = Field(default=None, alias="nativePayload")
     lease_expires_at: float
 
 
