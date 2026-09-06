@@ -179,7 +179,6 @@ def _run_numeric_oracle(
         refit=True,
         save_charts=False,
         verbose=0,
-        n_jobs=1,
     )
     cluster_best_rmse = float(final.aggregate.best_metric)
     local_best_rmse = float(local.best_rmse)
