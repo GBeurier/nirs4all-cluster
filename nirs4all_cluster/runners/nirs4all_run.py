@@ -575,13 +575,19 @@ def main(argv: list[str] | None = None) -> int:
         # Worker writes nirs4all artifacts into its own task workspace.
         params.pop("workspace_path", None)
         params.pop("n_jobs", None)
+        # ``1`` is the cluster's neutral/default worker-local parallelism.  Do
+        # not forward it to DAG-ML, whose public V1 API rejects the legacy
+        # PipelineRunner-only option.  Non-neutral requests remain explicit so
+        # an engine that cannot honor them fails closed instead of silently
+        # changing the requested execution contract.
+        if inner_n_jobs != 1:
+            params["n_jobs"] = inner_n_jobs
 
         start = time.time()
         run_result = nirs4all.run(
             pipeline=pipeline,
             dataset=dataset,
             workspace_path=str(Path(args.workspace)),
-            n_jobs=inner_n_jobs,
             **params,
         )
         duration = time.time() - start

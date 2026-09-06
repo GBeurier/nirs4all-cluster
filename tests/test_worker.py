@@ -214,7 +214,13 @@ def test_build_runner_spec_carries_native_payload_to_subprocess(tmp_path):
     assert "relation_manifest_identity" in handoff["alignmentStrategies"]
 
 
-def test_runner_maps_adapter_params_to_isolated_nirs4all_call(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("inner_params", "expected_n_jobs"),
+    [({}, None), ({"inner_n_jobs": 1}, None), ({"inner_n_jobs": 3}, 3)],
+)
+def test_runner_maps_adapter_params_to_isolated_nirs4all_call(
+    tmp_path, monkeypatch, inner_params, expected_n_jobs
+):
     seen = {}
 
     class _RunResult:
@@ -244,8 +250,8 @@ def test_runner_maps_adapter_params_to_isolated_nirs4all_call(tmp_path, monkeypa
                 "params": {
                     "workspace_path": "/local/workspace",
                     "n_jobs": 99,
-                    "inner_n_jobs": 3,
                     "random_state": 42,
+                    **inner_params,
                 },
                 "outputs": {"export_best_model": False},
             }
@@ -270,7 +276,10 @@ def test_runner_maps_adapter_params_to_isolated_nirs4all_call(tmp_path, monkeypa
     assert seen["pipeline"] == "/shared/pls.yaml"
     assert seen["dataset"] == "/data/corn"
     assert seen["workspace_path"] == str(tmp_path / "worker-workspace")
-    assert seen["n_jobs"] == 3
+    if expected_n_jobs is None:
+        assert "n_jobs" not in seen
+    else:
+        assert seen["n_jobs"] == expected_n_jobs
     assert seen["random_state"] == 42
     assert "inner_n_jobs" not in seen
     assert seen["closed"] is True
