@@ -4,6 +4,18 @@ All notable changes to `nirs4all-cluster` are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] — 2026-10-07
+
+### Added
+- Preserve the optional Studio native launch payload through client submission,
+  server storage and worker leases.
+- Publish requested robustness prediction-array evidence to the task workspace
+  and attach workspace/model artifact references to the publication trace.
+
+### Fixed
+- Omit neutral worker-local parallelism from DAG calls; retain explicit
+  non-neutral requests so unsupported execution options fail closed.
+
 ## [0.1.4] — 2026-07-07
 
 ### Added
