@@ -260,9 +260,15 @@ class WorkerAgent:
         if model_path and Path(model_path).exists():
             artifacts["model"] = self._upload(task.task_id, Path(model_path), role="model", kind="model")
         artifacts["logs"] = self._upload_log(task, exec_result.log_path)
-        if task.outputs.keep_task_workspace and exec_result.workspace_path.exists():
+        trace = (summary.get("extra") or {}).get("robustness_evidence_publication_trace")
+        evidence_workspace = isinstance(trace, dict) and bool(
+            (trace.get("publication_summary") or {}).get("workspace_required")
+        )
+        if (task.outputs.keep_task_workspace or evidence_workspace) and exec_result.workspace_path.exists():
             zipped = self._zip_dir(exec_result.workspace_path, exec_result.workspace_path.parent / "workspace.zip")
             artifacts["workspace"] = self._upload(task.task_id, zipped, role="workspace", kind="workspace")
+        if evidence_workspace and not artifacts["workspace"]:
+            raise RuntimeError("Robustness evidence workspace upload failed; evidence is not delivered")
 
         extra = summary.get("extra", {})
         if isinstance(extra, dict):

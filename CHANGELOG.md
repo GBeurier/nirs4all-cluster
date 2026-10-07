@@ -15,6 +15,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Omit neutral worker-local parallelism from DAG calls; retain explicit
   non-neutral requests so unsupported execution options fail closed.
+- Pair robustness predictors with their captured fold and verify baseline replay;
+  report unavailable predictors and incomplete evidence explicitly.
+- Reject ambiguous payload aliases and inconsistent row identities, preserve
+  existing prediction arrays, and deliver required evidence workspaces before cleanup.
 
 ## [0.1.4] — 2026-07-07
 
