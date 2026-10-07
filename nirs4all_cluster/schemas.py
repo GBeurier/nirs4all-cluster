@@ -198,7 +198,23 @@ class DagSchedulerContract(BaseModel):
     execute_rights_required: list[str] = Field(default_factory=lambda: ["execute"])
 
 
-class NativeRobustnessEvidencePublicationHandoff(BaseModel):
+class _NativePayloadBoundary(BaseModel):
+    """Preserve extension fields without allowing them to shadow validated aliases."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_alias_shadow(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            for name, field in cls.model_fields.items():
+                alias = field.alias
+                if alias and alias != name and alias in value and name in value:
+                    raise ValueError(f"Ambiguous field: supply only {alias} or {name}")
+        return value
+
+
+class NativeRobustnessEvidencePublicationHandoff(_NativePayloadBoundary):
     """Studio/native handoff for publishing spectral/OOD replay evidence.
 
     This is transport metadata only. Cluster workers still execute whole
@@ -224,7 +240,7 @@ class NativeRobustnessEvidencePublicationHandoff(BaseModel):
     published_fields: list[str] = Field(alias="publishedFields")
 
 
-class NativeExperimentLaunchPayloadManifest(BaseModel):
+class NativeExperimentLaunchPayloadManifest(_NativePayloadBoundary):
     """Native launch manifest carried from Studio to cluster/WASM submitters."""
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
@@ -236,7 +252,7 @@ class NativeExperimentLaunchPayloadManifest(BaseModel):
     )
 
 
-class NativeExperimentLaunchPayload(BaseModel):
+class NativeExperimentLaunchPayload(_NativePayloadBoundary):
     """Optional Studio-native payload preserved alongside a cluster job.
 
     The beta scheduler does not interpret this payload for placement. It is

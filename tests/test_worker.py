@@ -23,6 +23,16 @@ class _MiniIndexArray:
         self.values = list(values)
         self.ndim = 1
         self.size = len(self.values)
+        self.dtype = types.SimpleNamespace(
+            kind="b"
+            if any(isinstance(value, bool) for value in self.values)
+            else "i"
+            if all(isinstance(value, int) for value in self.values)
+            else "f"
+        )
+
+    def __len__(self):
+        return len(self.values)
 
     def reshape(self, *_shape):
         return self
@@ -42,6 +52,9 @@ class _MiniArray:
         self.rows = [list(row) for row in rows]
         self.ndim = 2
         self.shape = (len(self.rows), len(self.rows[0]) if self.rows else 0)
+
+    def __len__(self):
+        return len(self.rows)
 
     def __getitem__(self, key):
         if isinstance(key, _MiniIndexArray):
@@ -218,9 +231,7 @@ def test_build_runner_spec_carries_native_payload_to_subprocess(tmp_path):
     ("inner_params", "expected_n_jobs"),
     [({}, None), ({"inner_n_jobs": 1}, None), ({"inner_n_jobs": 3}, 3)],
 )
-def test_runner_maps_adapter_params_to_isolated_nirs4all_call(
-    tmp_path, monkeypatch, inner_params, expected_n_jobs
-):
+def test_runner_maps_adapter_params_to_isolated_nirs4all_call(tmp_path, monkeypatch, inner_params, expected_n_jobs):
     seen = {}
 
     class _RunResult:
@@ -340,7 +351,7 @@ def test_runner_records_robustness_handoff_trace_without_synthesizing_arrays(tmp
     summary = json.loads(result_file.read_text(encoding="utf-8"))
     trace = summary["extra"]["robustness_evidence_publication_trace"]
     assert trace["status"] == "received_needs_array_publication"
-    assert trace["published"]["result_metadata.robustness_evidence.predictor_bundle"].endswith("best_model.n4a")
+    assert "result_metadata.robustness_evidence.predictor_bundle" in trace["missing"]
     assert "prediction_arrays.X" in trace["missing"]
     assert "result_metadata.robustness_evidence.X" in trace["missing"]
 
@@ -433,27 +444,24 @@ def test_runner_publishes_row_aligned_robustness_evidence_to_workspace(tmp_path,
         model_path="/worker/outputs/best_model.n4a",
     )
 
-    assert summary == {
-        "status": "published",
-        "reason": None,
-        "published_prediction_count": 1,
-    }
+    assert summary["status"] == "partial"
+    assert summary["published_prediction_count"] == 1
+    assert summary["prediction_outcomes"][0]["missing"] == ["predictor_bundle"]
     assert stores[0].closed is True
     saved = stores[0].array_store.saved[0]
     _assert_matrix_equal(saved["X"], [[10.0, 11.0], [30.0, 31.0]])
-    assert saved["result_metadata"]["robustness_evidence"] == {
-        "X": "prediction_arrays.X",
-        "predictor_bundle": "/worker/outputs/best_model.n4a",
-        "publisher": "nirs4all-cluster.runner",
-    }
+    evidence = saved["result_metadata"]["robustness_evidence"]
+    assert evidence["X"] == "prediction_arrays.X"
+    assert "predictor_bundle" not in evidence
+    assert evidence["publication"]["reason"] == "prediction_model_identity_unavailable"
 
     trace = nirs4all_run._robustness_handoff_trace(
         _native_payload()["manifest"]["robustnessEvidencePublicationHandoff"],
         {"model": "/worker/outputs/best_model.n4a"},
         summary,
     )
-    assert trace["status"] == "published"
-    assert trace["missing"] == []
+    assert trace["status"] == "received_needs_array_publication"
+    assert trace["missing"] == ["result_metadata.robustness_evidence.predictor_bundle"]
     assert trace["published"]["prediction_arrays.X"] == "task_workspace_prediction_arrays"
 
 
@@ -561,7 +569,7 @@ def test_runner_publishes_robustness_evidence_by_relation_manifest_identity(tmp_
         model_path="/worker/outputs/best_model.n4a",
     )
 
-    assert summary["status"] == "published"
+    assert summary["status"] == "partial"
     saved = stores[0].array_store.saved[0]
     _assert_matrix_equal(saved["X"], [[30.0, 31.0], [10.0, 11.0]])
     assert saved["result_metadata"]["robustness_evidence"]["publisher"] == "nirs4all-cluster.runner"
