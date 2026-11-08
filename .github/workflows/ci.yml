@@ -25,7 +25,7 @@ jobs:
         with:
           enable-cache: true
       - name: Detect new secrets
-        run: git ls-files -z | xargs -0 uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline
+        run: git ls-files -z -- . ':(exclude)packages/nirs4all-access/tests/vectors/**' | xargs -0 uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline
       - name: Reject token-shaped CLI examples
         run: python3 scripts/secret_shape_guard.py
 

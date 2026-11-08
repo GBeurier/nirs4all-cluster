@@ -12,11 +12,11 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_support import TestClient, create_app
 
 from nirs4all_cluster import ClusterClient, build_nirs4all_run_request
 from nirs4all_cluster.schemas import JobRequest, JobView
-from nirs4all_cluster.server.app import ServerConfig, create_app
+from nirs4all_cluster.server.app import ServerConfig
 from nirs4all_cluster.versioning import fingerprint_obj
 
 

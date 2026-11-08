@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 import yaml
 
+from ..content_identity import verify_download
 from ..schemas import DatasetRef, PipelineRef, TaskPayload
 from ..versioning import fingerprint_file, fingerprint_obj
 
@@ -77,11 +78,23 @@ def _materialize_dataset(ref: DatasetRef, inputs_dir: Path, download: DownloadFn
     raise ValueError(f"unsupported dataset kind: {ref.kind!r}")
 
 
-def build_runner_spec(task: TaskPayload, workdir: Path, download: DownloadFn) -> dict[str, Any]:
+def build_runner_spec(
+    task: TaskPayload, workdir: Path, download: DownloadFn, *, allowed_roots: tuple[Path, ...] = ()
+) -> dict[str, Any]:
     inputs_dir = workdir / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
-    pipeline_spec = _materialize_pipeline(task.pipeline, inputs_dir, download)
-    dataset_spec = _materialize_dataset(task.dataset, inputs_dir, download)
+    for ref in (task.pipeline, task.dataset):
+        if getattr(ref, "path", None):
+            path = Path(ref.path or "").resolve()
+            if not any(path.is_relative_to(root.resolve()) for root in allowed_roots):
+                raise ValueError("worker path is outside configured allowed roots")
+
+    def verified_download(artifact_id: str, dest: Path) -> Path:
+        download(artifact_id, dest)
+        return verify_download(dest, task.input_artifacts.get(artifact_id))
+
+    pipeline_spec = _materialize_pipeline(task.pipeline, inputs_dir, verified_download)
+    dataset_spec = _materialize_dataset(task.dataset, inputs_dir, verified_download)
     spec = {
         "pipeline": pipeline_spec,
         "dataset": dataset_spec,

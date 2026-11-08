@@ -32,3 +32,7 @@ coverage.xml
 
 # --- untracked build/process docs (kept locally, 2026-06-16) ---
 WORKLOG.md
+
+# Intentional, pinned owner-produced acceptance fixture (see its provenance).
+!tests/fixtures/owner-python-1.0.n4a
+*.token

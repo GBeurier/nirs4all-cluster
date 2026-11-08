@@ -151,7 +151,7 @@ _MISSING_RIGHTS_RE = re.compile(r"lacks required right\(s\):\s*(.+?)\s*$")
 def parse_missing_rights(detail: str | None) -> tuple[str | None, frozenset[str]]:
     """Extract ``(principal, missing_rights)`` from a 403 detail string.
 
-    The server emits ``principal 'alice' lacks required right(s): submit, cancel``.
+    The server emits ``principal 'alice' lacks required right(s): cluster.submit, cluster.cancel``.
     Returns ``(None, frozenset())`` for any string that does not match, so callers
     can rely on the shape without guarding.
     """

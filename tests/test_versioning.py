@@ -3,10 +3,10 @@
 import hashlib
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_support import TestClient, create_app
 
 from nirs4all_cluster import versioning as V
-from nirs4all_cluster.server.app import ServerConfig, create_app
+from nirs4all_cluster.server.app import ServerConfig
 
 
 @pytest.fixture
@@ -84,6 +84,7 @@ def test_pipeline_fingerprint_mismatch_emits_event(client):
     inline = {"steps": [{"class": "sklearn.cross_decomposition.PLSRegression"}]}
     req = {
         "type": "nirs4all.run",
+        "outputs": {"export_best_model": False},
         "pipeline": {"kind": "inline_json", "inline": inline, "expected_fingerprint": V.fingerprint_obj(inline)},
         "dataset": {"kind": "shared_path", "path": "/a"},
     }
@@ -98,6 +99,7 @@ def test_pipeline_fingerprint_mismatch_emits_event(client):
         "pipeline_fingerprint": "sha256:something-else",
         "metrics": {"best_rmse": 0.1},
         "artifacts": {},
+        "delivery": {"status": "not_requested"},
     }
     client.post(f"/v1/tasks/{task['task_id']}/complete", params={"worker_id": worker}, json=body).raise_for_status()
     events = client.app.state.db.list_recent_events()

@@ -16,6 +16,8 @@ TOKEN_SHAPED_LITERALS = [
 ]
 
 FORBIDDEN = [
+    ("project credential literal", re.compile(r"n4p1\.[0-9a-f]{16}\.[0-9a-f]{64}")),
+    ("project token assignment", re.compile(r"NIRS4ALL_PROJECT_TOKEN\s*=\s*[\"\']?[a-z0-9]", re.I)),
     (
         "concrete --principal credential example",
         re.compile(
@@ -63,6 +65,8 @@ def _tracked_files() -> list[Path]:
 def main() -> int:
     findings: list[str] = []
     for path in _tracked_files():
+        if path.as_posix().startswith("packages/nirs4all-access/tests/vectors/"):
+            continue
         try:
             raw = path.read_bytes()
         except OSError as exc:

@@ -1,84 +1,78 @@
-# REST & WebSocket API
+# REST and WebSocket API v2
 
-All `/v1` endpoints are gated by **credential-bound rights** when the server is
-configured with principals (`--principal` / `--auth-file`) or a
-legacy `--token` (kept as a single all-rights admin). With neither configured the
-server runs **open (dev mode)**. Every `/v1` request/response also carries the
-version handshake headers (`X-N4C-Version`, `X-N4C-Api`, `X-N4C-Role`) — see
-{doc}`versioning`.
+All /v1 routes use Authorization: Bearer project credentials. Shared verifier:
+`packages/nirs4all-access/CONTRACT.md`. No query credentials, caller project paths
+or project headers. 401 ->403 ->404 is the access/resource order; 401 includes
+WWW-Authenticate: Bearer. Incompatible explicit X-N4C-Api yields 426 after auth.
+Every HTTP/WS response advertises X-N4C-Api=2 and X-N4C-Version. Client role headers
+are advisory only. Authenticated valid version drift is bounded per project.
 
-## Authorization & rights
-
-A caller's rights come from its bearer credential, **never** from the advisory
-`X-N4C-Role` header. A missing/invalid credential returns **401**; a valid
-credential lacking the required right returns **403**.
-
-| Right | Gates |
+| Operation | Right |
 |---|---|
-| `submit` | `POST /v1/jobs`, `POST /v1/artifacts` (input upload) |
-| `read` | every `GET /v1/jobs*`, `/v1/stats`, `/v1/workers`, `GET /v1/artifacts/{id}`, both WS streams (`?token=`) |
-| `cancel` | `POST /v1/jobs/{id}/cancel` |
-| `execute` | the whole worker API (`POST /v1/workers/*`, `POST /v1/tasks/*`) |
-| `admin` | wildcard — grants every right |
+| GET project/jobs/tasks/events/artifacts/workers/stats, WS streams | cluster.read |
+| POST jobs, input artifacts, consumers/register | cluster.submit |
+| POST jobs/{id}/cancel | cluster.cancel |
+| POST workers/register, worker lease/heartbeat, task lifecycle | cluster.execute |
 
-Roles bundle rights: `submitter` = submit+read+cancel, `executor` = read+execute
-(the worker agent), `viewer` = read, `admin` = all. `register` echoes the granted
-rights in its `WorkerRegistered` response for executor self-diagnosis.
+Cluster admin is an owner-defined bundle of all five explicit rights; it never
+crosses project boundaries. `/v1/project` returns immutable project_id,
+principal_id, services, rights and reserved empty group_ids. Consumer registration
+at POST /v1/consumers/register echoes the auth-bound identity. Registered workers
+are compute providers in that same project.
 
-## Health & dashboard (no auth)
+Public GET /, /healthz, /version, /ui, /ui/ disclose only service/shell status.
+/docs, /redoc and /openapi.json are disabled. No implicit unauthenticated startup.
 
-| Method | Path | Returns |
-|---|---|---|
-| GET | `/` | `{service, version, api_version, ok}` |
-| GET | `/healthz` | `{ok: true}` (liveness probe) |
-| GET | `/version` | `{service, version, api_version}` |
-| GET | `/ui` | the live dashboard ({doc}`dashboard`) |
+Jobs: POST /v1/jobs, GET /v1/jobs (limit/status/name/created_before), GET
+/v1/jobs/{id}, /tasks, /events (after_id/limit), /artifacts; POST /cancel.
+Unknown/foreign job subresources return 404. The same project idempotency_key
+replays an equal normalized payload; a different payload returns 409.
+Server-attested scheduler/submission fields are excluded from this comparison.
 
-## Client API
+POST /v1/artifacts uploads an input multipart file. All input refs (including
+pipeline/dataset lists and entrypoint bundles) must exist in the project at submit;
+leased payload.input_artifacts pins each artifact ID to its hash.
+GET /v1/artifacts/{id} returns bytes with X-N4C-SHA256 and X-N4C-Size. Paths derive
+from the hash in the selected project CAS, never a persisted arbitrary path.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/jobs` | submit a job → `JobView` |
-| GET | `/v1/jobs` | list jobs (`status`, `name`, `limit`, `created_before` cursor) |
-| GET | `/v1/jobs/{id}` | job status + aggregate |
-| GET | `/v1/jobs/{id}/tasks` | tasks of a job |
-| GET | `/v1/jobs/{id}/events` | event history (`after_id`, `limit`) |
-| GET | `/v1/jobs/{id}/artifacts` | artifacts of a job |
-| POST | `/v1/jobs/{id}/cancel` | request cancellation |
-| GET | `/v1/stats` | server-wide counters → `ClusterStats` |
-| GET | `/v1/workers` | registered workers (+ version & divergence flag) |
-| POST | `/v1/artifacts` | upload an input artifact (multipart) |
-| GET | `/v1/artifacts/{id}` | download an artifact |
-| WS | `/v1/jobs/{id}/events/stream` | live events for one job (`?token=`) |
-| WS | `/v1/events/stream` | **global** live feed across all jobs/workers (`?token=`) |
+POST /v1/workers/register returns worker_id, **worker_secret** (one-time session
+secret), project_id, principal_id, rights, heartbeat_interval_s, lease_ttl_s.
+Subsequent worker/task calls require both project Bearer and X-N4C-Worker-Secret.
+Session secrets are stored hashed, have no n4p1 grammar and are repr-redacted.
+POST /v1/workers/{id}/heartbeat body:
+`{"active_attempts":[{"task_id":"task_id","attempt":1}]}`. Only matching,
+unexpired active leases renew. Empty pairs leave orphan leases eligible for reaping.
+POST /v1/workers/{id}/lease returns task payload or null. Slots derive from tasks.
 
-`POST /v1/jobs` accepts the optional Studio/native `nativePayload` field. The server validates
-and preserves it, then each worker lease returns the same payload under `task.nativePayload`.
-For `manifest.robustnessEvidencePublicationHandoff`, this means cluster/native runners can see
-the requested spectral/OOD evidence-publication contract before execution. It does not affect
-worker selection and it does not mark robustness replay evidence as present; readiness still
-requires the actual prediction arrays and predictor bundle published by the runner.
+POST /v1/tasks/{id}/start, /events, /artifacts, /complete, /fail all require query
+**worker_id and attempt** in addition to the two auth headers. Events permit only
+log/progress types. Upload roles: model/logs/workspace/output; best_model is reserved.
+An upload retry with equal bytes replays the role binding; different bytes yield
+409. All result.artifacts refs must match uploads by this current worker/task/
+attempt/role. Delivery reports explicit exported or not_requested status; exported
+model reports carry profile, owner version, format version, SHA256 and size.
+Completion validates refs and state in the same project DB critical section.
+Duplicate identical terminal reports yield 200; conflicting/illegal/stale reports
+409. No terminal report mutates a later attempt. See security-and-scope.md for the
+provider-attestation limit: this is transport verification, not scientific certification.
 
-When the current `nirs4all.run` subprocess sees that handoff, the completed `TaskResult.extra`
-contains `robustness_evidence_publication_trace`. This trace echoes the contract, records the
-exported predictor bundle path/artifact when available, and lists any required fields still
-missing. The beta runner publishes row-aligned `prediction_arrays.X` only when the task dataset
-is path-backed/reloadable and alignment is proven by `sample_indices`, full-dataset row count,
-or unique identifiers published in sample/relation materialization metadata; otherwise
-spectral/OOD replay remains blocked and the trace reports the skipped reason.
+Job aggregate.completeness is pending, complete, incomplete or not_requested.
+Partial matrix success retains existing succeeded semantics with incomplete status;
+CLI --wait exits nonzero. Best-model selection reads only accepted task results,
+including a deterministic task fallback if no rank metric is available.
 
-## Worker API
+WS /v1/jobs/{id}/events/stream and /v1/events/stream require Bearer **headers**.
+The latter is global only within the credential project. Subscribe precedes paged
+history replay; live IDs already replayed are suppressed. Authentication/rights/
+unknown-job denials are real HTTP 401/403/404 before accepting the handshake.
+Python websockets clients pass additional_headers={"Authorization": "Bearer " + token}.
+The dashboard's old query credential feed is intentionally deferred.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/workers/register` | register, declare labels/capabilities/versions |
-| POST | `/v1/workers/{id}/heartbeat` | keep-alive; returns `cancel_task_ids` |
-| POST | `/v1/workers/{id}/lease` | atomically claim the next eligible task |
-| POST | `/v1/tasks/{id}/start` | mark a leased task running |
-| POST | `/v1/tasks/{id}/events` | report progress |
-| POST | `/v1/tasks/{id}/artifacts` | upload a task output (model/logs/workspace) |
-| POST | `/v1/tasks/{id}/complete` | report success (`TaskResult` + fingerprint) |
-| POST | `/v1/tasks/{id}/fail` | report failure (requeued if attempts remain) |
-
-An incompatible protocol major is rejected with **HTTP 426**; an oversized JSON body with
-**413**.
+Heartbeat responses also include `cancel_attempts` with immutable task_id/attempt
+pairs. Agents act on these pairs; `cancel_task_ids` remains diagnostic only.
+Cancellation commits the task sweep and job status in one transaction under the
+project guard, and leases select only queued/running jobs. WebSocket receive and
+publish have one structured stream lifetime; cleanup is shielded until subscriber
+removal completes. Query credentials under **any key** recognized by the shared
+leaf are rejected, and every denied request's query string is cleared before
+transport logging. Legitimate pagination and worker lease queries remain supported.

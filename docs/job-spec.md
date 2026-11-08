@@ -66,6 +66,26 @@ alignment keep the required fields under `missing` instead of declaring spectral
 `shared_path`, `artifact`, `worker_local` (today behaves like `shared_path`), and
 `catalog` (a `nirs4all-datasets` id/DOI — **not implemented** in the beta worker).
 
+## Canonical Core `.n4a` jobs (explicit, opt-in)
+
+A job whose `params` carry `engine: native`, `native_profile: nirs4all.n4a.container.v1`
+and `source_id` (plus an optional `methods_library_path`) asks the SDK for a canonical
+Core container. The pipeline must be a native recipe (`steps` and `candidates`, JSON or
+YAML) and the dataset an IO record file readable on the worker. Core's producer is the
+single fit; the runner exports the exact sealed bytes and reports a `delivery` with
+`profile`, `physical_profile`, `container_id`, `owner_identities`
+(`model`/`run`/`result`/`score` fingerprints from the owner manifest), `owner_version`,
+`sha256`, `size_bytes` and `canonical_core: true`. Such a delivery has no
+`bundle_format_version`; the server requires `profile` plus either a bundle version or a
+`container_id`, checks the transport SHA-256/size, and stores the rest opaquely.
+
+`canonical_core: true` means Core-sealed native linear single-source, reported by a trusted
+provider. The server does not verify it, and it implies no host-model support. The profile
+writes no task workspace, so `keep_task_workspace` and a robustness evidence handoff are
+refused by the runner, and `random_state`, tuning, calibration, sessions and
+`workspace_path` are refused by the SDK. Default jobs are unchanged and keep reporting
+`nirs4all-python-n4a-1.0` with `canonical_core: false`.
+
 ## Runtime requirement & mixed fleets
 
 Every task runs a whole `nirs4all.run()` in a worker subprocess, so a task may only

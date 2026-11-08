@@ -1,3 +1,10 @@
+> November 2026 authoritative amendment: API v2 uses hash-only project credentials
+> from the independent stdlib nirs4all-access leaf and project-partitioned DB,
+> CAS and event stores. This supersedes historical shared-token/open startup and
+> the former no-project scope. See docs/rest-api.md, configuration.md and
+> security-and-scope.md for current auth, worker sessions, attempts, export delivery
+> and legacy-state refusal. State-machine transitions and scheduling policy remain.
+
 # Prototype design - nirs4all-cluster
 
 ## Objective
@@ -61,7 +68,7 @@ The prototype is not a definitive platform. It is used to measure:
 ## Non-goals of the prototype
 
 - No modification of other libraries.
-- No multi-tenancy open to third parties.
+- Private per-project services are authorized (November 2026); hostile execution remains out of scope.
 - No secure sandbox for arbitrary Python code.
 - No advance scheduler such as Kubernetes, Ray or Dask.
 - No concurrent writing in a shared `nirs4all` workspace.
@@ -297,7 +304,7 @@ Kinds supported in order of preference:
 
 Point 4 is useful for a proto because many Python pipelines contain
 sklearn objects that cannot be serialized into their own JSON. It is also dangerous:
-no multi-tenant with this mode without sandbox.
+Python execution is trusted within each project; no hostile multi-tenant sandbox is claimed.
 
 ### Dataset
 
@@ -433,7 +440,7 @@ The aggregation of the complete `nirs4all` workspace is not part of the MVP. It 
 
 MVP acceptable only for a trusted LAN:
 
-- static server/worker/client token;
+- API v2 hash-only project-token credentials, scoped to each private project;
 - closed-by-default CORS;
 - no execution of anonymous jobs;
 - logs without secrets;
@@ -445,7 +452,7 @@ Avant tout usage multi-utilisateur :
 
 - TLS or mTLS;
 - client/worker identities;
-- token rotation;
+- hot token rotation (current credentials change at restart);
 - container sandbox per task;
 - CPU/RAM/disk quotas;
 - optional no-network policy;

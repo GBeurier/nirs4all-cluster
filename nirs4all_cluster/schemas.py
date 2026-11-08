@@ -178,7 +178,8 @@ class JobSubmissionMetadata(BaseModel):
 
     mode: Literal["client_submitted"] = "client_submitted"
     principal: str | None = None
-    required_rights: list[str] = Field(default_factory=lambda: ["submit"])
+    project_id: str | None = None
+    required_rights: list[str] = Field(default_factory=lambda: ["cluster.submit"])
     granted_rights: list[str] = Field(default_factory=list)
 
 
@@ -194,8 +195,8 @@ class DagSchedulerContract(BaseModel):
     task_granularity: Literal["whole_nirs4all_run"] = "whole_nirs4all_run"
     assignment_mode: Literal["server_leased_executor"] = "server_leased_executor"
     result_provenance: Literal["server_attested_worker_report"] = "server_attested_worker_report"
-    submit_rights_required: list[str] = Field(default_factory=lambda: ["submit"])
-    execute_rights_required: list[str] = Field(default_factory=lambda: ["execute"])
+    submit_rights_required: list[str] = Field(default_factory=lambda: ["cluster.submit"])
+    execute_rights_required: list[str] = Field(default_factory=lambda: ["cluster.execute"])
 
 
 class _NativePayloadBoundary(BaseModel):
@@ -275,7 +276,7 @@ class TaskAssignmentMetadata(BaseModel):
     assigned_by: Literal["server"] = "server"
     executor_principal: str | None = None
     worker_id: str | None = None
-    required_rights: list[str] = Field(default_factory=lambda: ["execute"])
+    required_rights: list[str] = Field(default_factory=lambda: ["cluster.execute"])
     granted_rights: list[str] = Field(default_factory=list)
 
 
@@ -284,12 +285,13 @@ class ResultProvenance(BaseModel):
 
     source: Literal["worker_report"] = "worker_report"
     reported_by_principal: str | None = None
+    project_id: str | None = None
     worker_id: str | None = None
     job_id: str | None = None
     task_id: str | None = None
     attempt: int | None = None
     assignment_mode: Literal["server_leased_executor"] = "server_leased_executor"
-    required_rights: list[str] = Field(default_factory=lambda: ["execute"])
+    required_rights: list[str] = Field(default_factory=lambda: ["cluster.execute"])
     granted_rights: list[str] = Field(default_factory=list)
 
 
@@ -404,17 +406,29 @@ class WorkerRegister(BaseModel):
 
 class WorkerRegistered(BaseModel):
     worker_id: str
+    worker_secret: str = Field(repr=False)
+    project_id: str
+    principal_id: str
     heartbeat_interval_s: float = 10.0
     lease_ttl_s: float = 60.0
-    # Rights the server granted the registering credential (diagnostics only;
-    # additive, non-breaking). Empty in open/dev mode is also valid.
+    # Exact namespaced rights granted to this project credential (diagnostics).
     rights: list[str] = Field(default_factory=list)
+
+
+class ActiveAttempt(BaseModel):
+    task_id: str
+    attempt: int = Field(ge=1)
+
+
+class WorkerHeartbeat(BaseModel):
+    active_attempts: list[ActiveAttempt] = Field(default_factory=list)
 
 
 class HeartbeatAck(BaseModel):
     ok: bool = True
     # Tasks the server wants the worker to stop (cooperative cancellation).
     cancel_task_ids: list[str] = Field(default_factory=list)
+    cancel_attempts: list[ActiveAttempt] = Field(default_factory=list)
 
 
 class TaskPayload(BaseModel):
@@ -435,6 +449,7 @@ class TaskPayload(BaseModel):
     assignment: TaskAssignmentMetadata | None = None
     native_payload: NativeExperimentLaunchPayload | None = Field(default=None, alias="nativePayload")
     lease_expires_at: float
+    input_artifacts: dict[str, str] = Field(default_factory=dict)
 
 
 class LeaseResponse(BaseModel):
@@ -462,6 +477,21 @@ class RunMetrics(BaseModel):
     best_accuracy: float | None = None
 
 
+class ModelDelivery(BaseModel):
+    status: Literal["exported", "not_requested", "incomplete"] = "incomplete"
+    profile: str | None = None
+    bundle_format_version: str | None = None
+    # Canonical Core ``.n4a`` metadata, reported by a trusted provider and stored
+    # opaquely: a canonical container has no bundle version.
+    physical_profile: str | None = None
+    container_id: str | None = None
+    owner_identities: dict[str, str] | None = None
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int | None = Field(default=None, ge=1)
+    owner_version: str | None = None
+    canonical_core: bool = False
+
+
 class TaskResult(BaseModel):
     """Summary a worker reports on task completion. Mirrors design's JSON."""
 
@@ -474,6 +504,7 @@ class TaskResult(BaseModel):
     counts: dict[str, int] = Field(default_factory=dict)
     # artifact ids by role (model/logs/workspace) — filled after uploads.
     artifacts: dict[str, str | None] = Field(default_factory=dict)
+    delivery: ModelDelivery = Field(default_factory=ModelDelivery)
     provenance: ResultProvenance = Field(default_factory=ResultProvenance)
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -503,6 +534,7 @@ class TaskView(BaseModel):
 
 
 class JobAggregate(BaseModel):
+    completeness: Literal["pending", "complete", "incomplete", "not_requested"] = "pending"
     num_tasks: int = 0
     num_succeeded: int = 0
     num_failed: int = 0

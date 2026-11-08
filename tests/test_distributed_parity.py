@@ -37,7 +37,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
         "pipeline": {"mode": "path", "path": str(pipeline)},
         "dataset": {"mode": "path", "path": str(dataset)},
         "params": {"random_state": 42, "refit": True, "inner_n_jobs": 1},
-        "outputs": {"export_best_model": True, "keep_task_workspace": False},
+        "outputs": {"export_best_model": False, "keep_task_workspace": False},
     }
     local = execute_task(local_spec, tmp_path / "local-task", poll_interval=0.01, timeout=10)
     assert local.returncode == 0, local.result
@@ -54,7 +54,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             requirements={"labels": {"site": "release-lab"}, "min_gpu_count": 1},
             n_jobs=1,
             name="parity-harness",
-            outputs={"export_best_model": True, "keep_task_workspace": False},
+            outputs={"export_best_model": False, "keep_task_workspace": False},
         )
 
         missing_nirs4all = worker.register(
@@ -64,7 +64,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             version={"packages": {}},
             name="missing-nirs4all-worker",
         )
-        assert "execute" in missing_nirs4all.rights
+        assert "cluster.execute" in missing_nirs4all.rights
         assert worker.lease() is None
 
         wrong_site = worker.register(
@@ -74,7 +74,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             version={"packages": {"nirs4all": "fake-parity-1"}},
             name="wrong-site-worker",
         )
-        assert "execute" in wrong_site.rights
+        assert "cluster.execute" in wrong_site.rights
         assert worker.lease() is None
 
         cpu_only = worker.register(
@@ -84,7 +84,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             version={"packages": {"nirs4all": "fake-parity-1"}},
             name="cpu-only-worker",
         )
-        assert "execute" in cpu_only.rights
+        assert "cluster.execute" in cpu_only.rights
         assert worker.lease() is None
 
         assert submitter.get_job(job.id).status.value == "queued"
@@ -97,8 +97,8 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
             version={"packages": {"nirs4all": "fake-parity-1"}},
             name="parity-worker",
         )
-        assert "execute" in registered.rights
-        assert "submit" not in registered.rights
+        assert "cluster.execute" in registered.rights
+        assert "cluster.submit" not in registered.rights
 
         task = worker.lease()
         assert task is not None
@@ -110,10 +110,12 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
         assert task.assignment.assigned_by == "server"
         assert task.assignment.executor_principal == "worker1"
         assert task.assignment.worker_id == registered.worker_id
-        assert task.assignment.required_rights == ["execute"]
-        assert set(task.assignment.granted_rights) == {"read", "execute"}
-        worker.start_task(task.task_id)
-        spec = build_runner_spec(task, tmp_path / "distributed-task", worker.download_artifact)
+        assert task.assignment.required_rights == ["cluster.execute"]
+        assert set(task.assignment.granted_rights) == {"cluster.read", "cluster.execute"}
+        worker.start_task(task.task_id, attempt=task.attempt)
+        spec = build_runner_spec(
+            task, tmp_path / "distributed-task", worker.download_artifact, allowed_roots=(tmp_path,)
+        )
         distributed = execute_task(spec, tmp_path / "distributed-task", poll_interval=0.01, timeout=10)
         assert distributed.returncode == 0, distributed.result
         assert _received_run_args(distributed) == _received_run_args(local)
@@ -132,7 +134,7 @@ def test_cluster_run_matches_deterministic_local_executor(cluster, tmp_path, mon
     assert result.provenance.job_id == job.id
     assert result.provenance.task_id == task.task_id
     assert result.provenance.attempt == 1
-    assert set(result.provenance.granted_rights) == {"read", "execute"}
+    assert set(result.provenance.granted_rights) == {"cluster.read", "cluster.execute"}
     assert result.pipeline_fingerprint == spec["pipeline_fingerprint"]
     assert job.aggregate.num_tasks == 1
     assert job.aggregate.num_succeeded == 1
@@ -154,7 +156,7 @@ def test_worker_agent_loop_runs_one_fake_job_to_completion(cluster, tmp_path, mo
     _install_fake_nirs4all(tmp_path / "fake-lib", monkeypatch)
     monkeypatch.setattr(
         "nirs4all_cluster.worker.agent._environment_version",
-        lambda: {"packages": {"nirs4all": "fake-parity-1"}, "nirs4all_cluster": "test"},
+        lambda *a: {"packages": {"nirs4all": "fake-parity-1"}, "nirs4all_cluster": "test"},
     )
     dataset = _dataset(tmp_path, "agent-loop-dataset", samples=18, baseline_rmse=0.19, target_shift=0.4)
     pipeline = {
@@ -171,6 +173,7 @@ def test_worker_agent_loop_runs_one_fake_job_to_completion(cluster, tmp_path, mo
         state_dir=str(tmp_path / "worker-state"),
         poll_interval=0.01,
         gpu_count=0,
+        allowed_roots=(tmp_path,),
         name="bounded-agent-loop",
     )
 
@@ -191,7 +194,7 @@ def test_worker_agent_loop_runs_one_fake_job_to_completion(cluster, tmp_path, mo
                 params={"random_state": 5, "dag_scale": 2},
                 n_jobs=1,
                 name="worker-agent-loop-proof",
-                outputs={"export_best_model": True, "keep_task_workspace": False},
+                outputs={"export_best_model": False, "keep_task_workspace": False},
             )
             job = submitter.wait(job.id, poll=0.02, timeout=10)
             tasks = submitter.get_tasks(job.id)
@@ -204,7 +207,7 @@ def test_worker_agent_loop_runs_one_fake_job_to_completion(cluster, tmp_path, mo
     assert job.status.value == "succeeded", job.aggregate.errors
     assert job.aggregate.num_tasks == 1
     assert job.aggregate.num_succeeded == 1
-    assert job.aggregate.best_model_artifact_id is not None
+    assert job.aggregate.best_model_artifact_id is None
     assert len(tasks) == 1
     task = tasks[0]
     assert task.worker_id == worker.worker_id
@@ -280,7 +283,7 @@ def test_inline_dag_matrix_preserves_local_result_semantics(cluster, tmp_path, m
                 "pipeline": {"mode": "path", "path": str(pipeline_file)},
                 "dataset": {"mode": "path", "path": str(dataset)},
                 "params": {"random_state": 11, "refit": True, "dag_scale": 2, "inner_n_jobs": 2},
-                "outputs": {"export_best_model": True, "keep_task_workspace": False},
+                "outputs": {"export_best_model": False, "keep_task_workspace": False},
             },
             tmp_path / f"local-{dataset.name}",
             poll_interval=0.01,
@@ -301,7 +304,7 @@ def test_inline_dag_matrix_preserves_local_result_semantics(cluster, tmp_path, m
             params={"random_state": 11, "refit": True, "dag_scale": 2},
             n_jobs=2,
             name="real-dag-parity",
-            outputs={"export_best_model": True, "keep_task_workspace": False},
+            outputs={"export_best_model": False, "keep_task_workspace": False},
         )
         assert job.aggregate.num_tasks == 2
         worker.register(
@@ -315,8 +318,10 @@ def test_inline_dag_matrix_preserves_local_result_semantics(cluster, tmp_path, m
             assert task is not None
             assert task.pipeline.kind == "inline_json"
             assert task.pipeline.expected_fingerprint == fingerprint_obj(dag_pipeline)
-            worker.start_task(task.task_id)
-            spec = build_runner_spec(task, tmp_path / f"distributed-{index}", worker.download_artifact)
+            worker.start_task(task.task_id, attempt=task.attempt)
+            spec = build_runner_spec(
+                task, tmp_path / f"distributed-{index}", worker.download_artifact, allowed_roots=(tmp_path,)
+            )
             assert spec["pipeline_fingerprint"] == fingerprint_obj(dag_pipeline)
             distributed = execute_task(spec, tmp_path / f"distributed-{index}", poll_interval=0.01, timeout=10)
             assert distributed.returncode == 0, distributed.result
@@ -584,8 +589,12 @@ def _complete_from_execution(
     artifacts: dict[str, str | None] = {"model": None, "logs": None, "workspace": None}
     model_path = (summary.get("produced") or {}).get("model")
     if model_path is not None:
-        artifacts["model"] = worker.upload_artifact(task.task_id, model_path, role="model", kind="model")
-    artifacts["logs"] = worker.upload_artifact(task.task_id, execution.log_path, role="logs", kind="log")
+        artifacts["model"] = worker.upload_artifact(
+            task.task_id, model_path, role="model", kind="model", attempt=task.attempt
+        )
+    artifacts["logs"] = worker.upload_artifact(
+        task.task_id, execution.log_path, role="logs", kind="log", attempt=task.attempt
+    )
     result = TaskResult(
         status="succeeded",
         nirs4all_version=summary.get("nirs4all_version"),
@@ -595,8 +604,9 @@ def _complete_from_execution(
         counts=summary.get("counts", {}),
         artifacts=artifacts,
         extra=summary.get("extra", {}),
+        delivery=summary.get("delivery", {}),
     )
-    worker.complete_task(task.task_id, result)
+    worker.complete_task(task.task_id, result, attempt=task.attempt)
 
 
 def _normalize_execution_result(execution: ExecutionResult) -> dict[str, Any]:
