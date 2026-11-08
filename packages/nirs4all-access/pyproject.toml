@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nirs4all-access"
+version = "0.1.0"
+description = "Standard-library project-token authentication contract"
+requires-python = ">=3.11"
+dependencies = []
+license = "CeCILL-2.1 OR AGPL-3.0-or-later"
+license-files = ["LICENSE", "LICENSES/*.txt", "LICENSES/COMMERCIAL-LICENSE*.md"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nirs4all_access = ["py.typed"]

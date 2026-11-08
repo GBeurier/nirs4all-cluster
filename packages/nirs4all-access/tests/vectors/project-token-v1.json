@@ -1,0 +1,1270 @@
+{
+  "hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f",
+  "hash_b": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f",
+  "invalid_records": [
+    {
+      "name": "bool expiry",
+      "patch": {
+        "expires_at": true
+      }
+    },
+    {
+      "name": "str revoked",
+      "patch": {
+        "revoked": "false"
+      }
+    },
+    {
+      "name": "plain token",
+      "patch": {
+        "token": "synthetic"
+      }
+    },
+    {
+      "name": "unknown field",
+      "patch": {
+        "foo": 1
+      }
+    },
+    {
+      "name": "project traversal",
+      "patch": {
+        "project_id": "../escape"
+      }
+    },
+    {
+      "name": "device",
+      "patch": {
+        "project_id": "con"
+      }
+    },
+    {
+      "name": "groups",
+      "patch": {
+        "group_ids": [
+          "group"
+        ]
+      }
+    },
+    {
+      "name": "empty services",
+      "patch": {
+        "services": []
+      }
+    },
+    {
+      "name": "empty rights",
+      "patch": {
+        "rights": []
+      }
+    },
+    {
+      "name": "mismatch",
+      "patch": {
+        "rights": [
+          "datasets.read"
+        ]
+      }
+    },
+    {
+      "name": "wildcard",
+      "patch": {
+        "rights": [
+          "cluster.*"
+        ]
+      }
+    },
+    {
+      "name": "duplicate array",
+      "patch": {
+        "rights": [
+          "cluster.read",
+          "cluster.read"
+        ]
+      }
+    },
+    {
+      "name": "bad hash",
+      "patch": {
+        "token_hash": "invalid"
+      }
+    }
+  ],
+  "negative_hash": "79642835d31e3bd0f88710d8207531845e82410167f5a5e5b5ccf68f420ae377",
+  "record": {
+    "expires_at": null,
+    "group_ids": [],
+    "key_id": "0123456789abcdef",
+    "principal_id": "consumer",
+    "project_id": "project-a",
+    "revoked": false,
+    "rights": [
+      "cluster.read"
+    ],
+    "services": [
+      "cluster"
+    ],
+    "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+  },
+  "record_b": {
+    "expires_at": null,
+    "group_ids": [],
+    "key_id": "fedcba9876543210",
+    "principal_id": "principal-b",
+    "project_id": "project-b",
+    "revoked": false,
+    "rights": [
+      "cluster.read",
+      "cluster.submit",
+      "datasets.read"
+    ],
+    "services": [
+      "cluster",
+      "datasets"
+    ],
+    "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+  },
+  "schema": "nirs4all-access/project-token-store/v1",
+  "splice_tokens": [
+    "n4p1.fedcba9876543210.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  ],
+  "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "token_b": "n4p1.fedcba9876543210.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "verify": [
+    {
+      "code": null,
+      "missing_rights": [],
+      "name": "valid",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "wrong secret",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "unknown key",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.1123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "uppercase",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "N4P1.0123456789ABCDEF.0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "newline",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "nonascii",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\u00e9"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "missing",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": null
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "revoked",
+      "now": 100,
+      "patch": {
+        "revoked": true
+      },
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "missing_rights": [],
+      "name": "expiry 99",
+      "now": 99,
+      "patch": {
+        "expires_at": 100
+      },
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "expiry 100",
+      "now": 100,
+      "patch": {
+        "expires_at": 100
+      },
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "missing_rights": [],
+      "name": "expiry 101",
+      "now": 101,
+      "patch": {
+        "expires_at": 100
+      },
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "service_not_granted",
+      "missing_rights": [],
+      "name": "wrong service",
+      "now": 100,
+      "required_rights": [
+        "datasets.read"
+      ],
+      "service": "datasets",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "missing right",
+      "now": 100,
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "admin exact",
+      "now": 100,
+      "patch": {
+        "rights": [
+          "cluster.admin"
+        ]
+      },
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "empty": true,
+      "missing_rights": [],
+      "name": "empty verifier",
+      "now": 100,
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "P1 read,submit",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read",
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "P2 submit,read",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit",
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.read"
+      ],
+      "name": "X8 submit-holder read,submit",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.submit"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read",
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.read"
+      ],
+      "name": "X9 submit-holder submit,read",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.submit"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit",
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.admin",
+        "cluster.submit"
+      ],
+      "name": "X10 two missing",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read",
+        "cluster.submit",
+        "cluster.admin"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "principal-b",
+        "project_id": "project-b",
+        "rights": [
+          "cluster.read",
+          "cluster.submit",
+          "datasets.read"
+        ],
+        "services": [
+          "cluster",
+          "datasets"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X11 all held multi",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit",
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.fedcba9876543210.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "code": "invalid_credential",
+      "expected_principal": null,
+      "missing_rights": [],
+      "name": "P3 revoked exp101",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": 101,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": true,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "consumer",
+        "project_id": "project-a",
+        "rights": [
+          "cluster.read"
+        ],
+        "services": [
+          "cluster"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X12 pair live exp101",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": 101,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "principal-b",
+        "project_id": "project-b",
+        "rights": [
+          "cluster.read",
+          "cluster.submit",
+          "datasets.read"
+        ],
+        "services": [
+          "cluster",
+          "datasets"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X4 tokenB B-only right [A,B]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.fedcba9876543210.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "principal-b",
+        "project_id": "project-b",
+        "rights": [
+          "cluster.read",
+          "cluster.submit",
+          "datasets.read"
+        ],
+        "services": [
+          "cluster",
+          "datasets"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X1 tokenB [B,A]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.fedcba9876543210.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "consumer",
+        "project_id": "project-a",
+        "rights": [
+          "cluster.read"
+        ],
+        "services": [
+          "cluster"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X2 tokenA [A,B]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "consumer",
+        "project_id": "project-a",
+        "rights": [
+          "cluster.read"
+        ],
+        "services": [
+          "cluster"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X3 tokenA [B,A]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "X13 A lacks B right [A,B]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "missing_rights",
+      "expected_principal": null,
+      "missing_rights": [
+        "cluster.submit"
+      ],
+      "name": "X14 A lacks B right [B,A]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.submit"
+      ],
+      "service": "cluster",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "service_not_granted",
+      "expected_principal": null,
+      "missing_rights": [],
+      "name": "X19 A lacks B service [A,B]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "datasets.read"
+      ],
+      "service": "datasets",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "service_not_granted",
+      "expected_principal": null,
+      "missing_rights": [],
+      "name": "X15 A lacks B service [B,A]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "datasets.read"
+      ],
+      "service": "datasets",
+      "status": 403,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "consumer",
+        "project_id": "project-a",
+        "rights": [
+          "cluster.read"
+        ],
+        "services": [
+          "cluster"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X16 A live B revoked",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": true,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": null,
+      "expected_principal": {
+        "group_ids": [],
+        "principal_id": "principal-b",
+        "project_id": "project-b",
+        "rights": [
+          "cluster.read",
+          "cluster.submit",
+          "datasets.read"
+        ],
+        "services": [
+          "cluster",
+          "datasets"
+        ]
+      },
+      "missing_rights": [],
+      "name": "X17 A revoked B live",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": true,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 200,
+      "token": "n4p1.fedcba9876543210.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "code": "invalid_credential",
+      "expected_principal": null,
+      "missing_rights": [],
+      "name": "P5 keyB secretA [A,B]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.fedcba9876543210.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "code": "invalid_credential",
+      "expected_principal": null,
+      "missing_rights": [],
+      "name": "X5 keyB secretA [B,A]",
+      "now": 100,
+      "records": [
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "fedcba9876543210",
+          "principal_id": "principal-b",
+          "project_id": "project-b",
+          "revoked": false,
+          "rights": [
+            "cluster.read",
+            "cluster.submit",
+            "datasets.read"
+          ],
+          "services": [
+            "cluster",
+            "datasets"
+          ],
+          "token_hash": "sha256:afec7bf108bf7190eba525081d5448ba57a5706da136242352a58d67ce3c123f"
+        },
+        {
+          "expires_at": null,
+          "group_ids": [],
+          "key_id": "0123456789abcdef",
+          "principal_id": "consumer",
+          "project_id": "project-a",
+          "revoked": false,
+          "rights": [
+            "cluster.read"
+          ],
+          "services": [
+            "cluster"
+          ],
+          "token_hash": "sha256:f32aa60e064b9300ec70a6ca65744c18a2a88896c598a85dfb56d08e4cf7bf0f"
+        }
+      ],
+      "required_rights": [
+        "cluster.read"
+      ],
+      "service": "cluster",
+      "status": 401,
+      "token": "n4p1.fedcba9876543210.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
