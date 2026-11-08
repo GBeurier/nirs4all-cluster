@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 
 from .client import ClusterClient, build_nirs4all_run_request
@@ -35,6 +36,7 @@ from .client_errors import (
     ClusterPermissionError,
     ClusterVersionError,
 )
+from .logging_setup import LOG_LEVELS
 
 
 def _parse_labels(raw: str | None) -> dict[str, str]:
@@ -52,7 +54,7 @@ def _parse_labels(raw: str | None) -> dict[str, str]:
 
 def _client(args: argparse.Namespace) -> ClusterClient:
     server = getattr(args, "server", None) or os.environ.get("N4CLUSTER_SERVER", "http://127.0.0.1:8765")
-    token = getattr(args, "token", None) or os.environ.get("N4CLUSTER_TOKEN")
+    token = _credential(args)
     return ClusterClient(server, token=token)
 
 
@@ -119,64 +121,88 @@ def _run_job_from_args(args: argparse.Namespace) -> Any:
     )
 
 
-def _load_principals(specs: list[str] | None, auth_file: str | None) -> list[Any]:
-    """Build RBAC principals from ``--principal`` entries and/or ``--auth-file`` JSON.
+def _credential(args: argparse.Namespace) -> str | None:
+    path = getattr(args, "token_file", None)
+    if path:
+        from .credentials import read_bearer_file
 
-    Raises ``ValueError`` on a malformed spec or unknown role so the server fails
-    fast at startup rather than silently granting nothing.
-    """
-    from .server.auth import Principal, rights_from_roles
+        return read_bearer_file(path)
+    return os.environ.get("NIRS4ALL_PROJECT_TOKEN") or os.environ.get("N4CLUSTER_TOKEN")
 
-    principals: list[Any] = []
-    for spec in specs or []:
-        name, sep, rest = spec.partition(":")
-        token, sep2, roles_csv = rest.partition(":")
-        if not (name and sep and token):
-            raise ValueError(f"RBAC principal spec must contain name, token, and roles separated by ':' (got {spec!r})")
-        roles = [r.strip() for r in roles_csv.split(",") if r.strip()]
-        if not roles:
-            raise ValueError(f"RBAC principal {name!r} needs at least one role")
-        principals.append(Principal(name=name, token=token, rights=rights_from_roles(roles)))
-    if auth_file:
-        entries = json.loads(Path(auth_file).read_text(encoding="utf-8"))
-        for entry in entries:
-            principals.append(
-                Principal(
-                    name=entry["name"],
-                    token=entry["token"],
-                    rights=rights_from_roles(entry.get("roles", [])),
-                )
-            )
-    return principals
+
+def cmd_init_state(args: argparse.Namespace) -> int:
+    from .server.state import bootstrap_state
+
+    bootstrap_state(args.state, ())
+    print("New project-services state initialized. Provision a token before startup.")
+    return 0
+
+
+def cmd_token_create(args: argparse.Namespace) -> int:
+    from nirs4all_access import ProjectPrincipal, issue_credential, write_credential_store
+
+    from .server.auth import rights_from_roles
+    from .server.state import state_credentials, validate_state
+
+    state = validate_state(args.state)
+    records = state_credentials(state)
+    p = ProjectPrincipal(
+        args.project, args.principal, frozenset({"cluster"}), frozenset(rights_from_roles(_csv_list(args.role)))
+    )
+    token, record = issue_credential(p, expires_at=args.expires_at)
+    write_credential_store(state / "auth" / "credentials.json", (*records, record))
+    print("Credential provisioned; restart server for changes to apply.", file=sys.stderr)
+    print(token)  # Intentional one-time secret delivery. Never written to auth state.
+    return 0
+
+
+def cmd_token_revoke(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from nirs4all_access import write_credential_store
+
+    from .server.state import state_credentials, validate_state
+
+    state = validate_state(args.state)
+    records = state_credentials(state)
+    matches = [r for r in records if r.key_id == args.key_id]
+    if len(matches) != 1:
+        raise ValueError("unknown credential key ID; provide the exact configured key_id")
+    write_credential_store(
+        state / "auth" / "credentials.json",
+        tuple(replace(r, revoked=True) if r.key_id == args.key_id else r for r in records),
+    )
+    print("Credential revoked in hash-only configuration; restart server to apply this snapshot.")
+    return 0
 
 
 def cmd_server(args: argparse.Namespace) -> int:
     import uvicorn
+    from nirs4all_access import require_secure_transport
 
-    from .logging_setup import configure_logging
+    from .logging_setup import QUIET_UVICORN_PROFILE, configure_logging
     from .server.app import ServerConfig, create_app
 
-    configure_logging(args.log_level, args.log_file)
-    token = args.token or os.environ.get("N4CLUSTER_TOKEN")
-    try:
-        principals = _load_principals(args.principal, args.auth_file)
-    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
-        print(f"[n4cluster] invalid principals config: {exc}")
-        return 2
+    require_secure_transport(
+        args.host, tls=bool(args.ssl_keyfile and args.ssl_certfile), trusted_proxy=args.trusted_tls_proxy
+    )
     config = ServerConfig(
         state_dir=args.state,
-        token=token,
-        principals=principals,
         allow_python_jobs=args.allow_python_jobs,
         lease_ttl_s=args.lease_ttl,
         cors_origins=_csv_list(args.cors_origin),
     )
+    configure_logging(args.log_level, args.log_file)
     app = create_app(config)
-    auth_mode = "rbac" if principals else ("token" if token else "off")
-    print(f"[n4cluster] server on http://{args.host}:{args.port}  state={args.state}  "
-          f"auth={auth_mode}  python_jobs={'on' if args.allow_python_jobs else 'off'}")
-    print(f"[n4cluster] dashboard: http://{args.host}:{args.port}/ui")
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    print(f"[n4cluster] project-token server on {args.host}:{args.port}")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        **QUIET_UVICORN_PROFILE,
+        ssl_keyfile=args.ssl_keyfile,
+        ssl_certfile=args.ssl_certfile,
+    )
     return 0
 
 
@@ -187,7 +213,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
     configure_logging(args.log_level, args.log_file)
     server = args.server or os.environ.get("N4CLUSTER_SERVER", "http://127.0.0.1:8765")
-    token = args.token or os.environ.get("N4CLUSTER_TOKEN")
+    token = _credential(args)
     capabilities: dict[str, Any] = {}
     if args.memory_gb is not None:
         capabilities["memory_gb"] = args.memory_gb
@@ -202,14 +228,18 @@ def cmd_worker(args: argparse.Namespace) -> int:
         name=args.name,
         poll_interval=args.poll_interval,
         gpu_count=args.gpus,
+        allowed_roots=tuple(Path(p).resolve() for p in args.allow_path_root or []),
+        python_exe=args.python_exe,
     )
     try:
         worker_id = agent.register()
     except ClusterVersionError as exc:
         print(f"[n4cluster] cannot register: {exc}")
         return 2
-    print(f"[n4cluster] worker {worker_id} registered to {server}  slots={args.slots}  "
-          f"labels={agent.labels}  (Ctrl-C to stop)")
+    print(
+        f"[n4cluster] worker {worker_id} registered to {server}  slots={args.slots}  "
+        f"labels={agent.labels}  (Ctrl-C to stop)"
+    )
     try:
         agent.serve()
     except KeyboardInterrupt:
@@ -231,9 +261,13 @@ def cmd_submit(args: argparse.Namespace) -> int:
         print(f"submitted job {job.id}  status={job.status.value}  tasks={job.aggregate.num_tasks}")
         if args.wait:
             job = client.wait(job.id, timeout=args.timeout)
-            print(f"finished  status={job.status.value}  "
-                  f"best[{spec.get('rank_metric', 'best_rmse')}]={job.aggregate.best_metric}")
+            print(
+                f"finished  status={job.status.value}  "
+                f"best[{spec.get('rank_metric', 'best_rmse')}]={job.aggregate.best_metric}"
+            )
             _print_ranking(job)
+            if job.status.value != "succeeded" or job.aggregate.completeness == "incomplete":
+                return 1
             if args.out:
                 written = client.download_all_artifacts(job.id, args.out)
                 print(f"downloaded {len(written)} artifact(s) to {args.out}")
@@ -245,12 +279,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     with _client(args) as client:
         job = client.submit(req)
         scope = req.parity.scope if req.parity else "unknown"
-        print(f"submitted nirs4all.run job {job.id}  status={job.status.value}  "
-              f"tasks={job.aggregate.num_tasks}  parity={scope}")
+        print(
+            f"submitted nirs4all.run job {job.id}  status={job.status.value}  "
+            f"tasks={job.aggregate.num_tasks}  parity={scope}"
+        )
         if args.wait:
             job = client.wait(job.id, timeout=args.timeout)
             print(f"finished  status={job.status.value}  best[{req.rank_metric}]={job.aggregate.best_metric}")
             _print_ranking(job)
+            if job.status.value != "succeeded" or job.aggregate.completeness == "incomplete":
+                return 1
             if args.out:
                 written = client.download_all_artifacts(job.id, args.out)
                 print(f"downloaded {len(written)} artifact(s) to {args.out}")
@@ -262,8 +300,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         job = client.get_job(args.job_id)
         agg = job.aggregate
         print(f"job {job.id}  status={job.status.value}  name={job.name}")
-        print(f"tasks: {agg.num_succeeded} ok / {agg.num_failed} failed / "
-              f"{agg.num_running} running / {agg.num_queued} queued  (total {agg.num_tasks})")
+        print(
+            f"tasks: {agg.num_succeeded} ok / {agg.num_failed} failed / "
+            f"{agg.num_running} running / {agg.num_queued} queued  (total {agg.num_tasks})"
+        )
         if agg.best_metric is not None:
             print(f"best metric: {agg.best_metric}  (task {agg.best_task_id})")
         _print_ranking(job)
@@ -308,8 +348,10 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         for j in jobs:
             a = j.aggregate
             best = "" if a.best_metric is None else f"best={a.best_metric}"
-            print(f"{j.id}  {j.status.value:<10}  {a.num_succeeded}/{a.num_tasks} ok  "
-                  f"{a.num_failed} failed  {best}  {j.name or ''}".rstrip())
+            print(
+                f"{j.id}  {j.status.value:<10}  {a.num_succeeded}/{a.num_tasks} ok  "
+                f"{a.num_failed} failed  {best}  {j.name or ''}".rstrip()
+            )
     return 0
 
 
@@ -318,8 +360,10 @@ def cmd_workers(args: argparse.Namespace) -> int:
         for w in client.list_workers():
             diverge = "  !version" if w.get("version_divergent") else ""
             ver = w.get("cluster_version") or "?"
-            print(f"{w['id']}  {w['status']:<5}  slots={w['slots_used']}/{w['slots_total']}  "
-                  f"labels={w['labels']}  v={ver}{diverge}  name={w.get('name')}")
+            print(
+                f"{w['id']}  {w['status']:<5}  slots={w['slots_used']}/{w['slots_total']}  "
+                f"labels={w['labels']}  v={ver}{diverge}  name={w.get('name')}"
+            )
     return 0
 
 
@@ -339,38 +383,64 @@ def _print_ranking(job: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
+class _Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
+    def error(self, message):
+        if not message.startswith("legacy credential options"):
+            message = "invalid command arguments; use --help. Project clients use --token-file or NIRS4ALL_PROJECT_TOKEN; provision new state with init-state."
+        super().error(message)
+
+    def parse_known_args(self, args=None, namespace=None):
+        values = list(args) if args is not None else sys.argv[1:]
+        # Refuse before argparse can echo either values or unknown arguments.
+        provisioning = self.prog.endswith("token-create") or (self.prog == "n4cluster" and "token-create" in values[:1])
+        forbidden = {"--token", "--auth-file"} | (set() if provisioning else {"--principal"})
+        if any(value.split("=", 1)[0] in forbidden for value in values):
+            self.error(
+                "legacy credential options are refused; use project init-state in a NEW empty directory and token-create; clients use --token-file or NIRS4ALL_PROJECT_TOKEN"
+            )
+        return super().parse_known_args(values, namespace)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="n4cluster", description="nirs4all-cluster CLI")
+    parser = _Parser(prog="n4cluster", description="nirs4all-cluster CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_conn(p: argparse.ArgumentParser) -> None:
         p.add_argument("--server", help="server base URL (or $N4CLUSTER_SERVER)")
-        p.add_argument("--token", help="auth token (or $N4CLUSTER_TOKEN)")
+        p.add_argument("--token-file", help="private credential file (or $NIRS4ALL_PROJECT_TOKEN)")
+
+    p_init = sub.add_parser("init-state", help="initialize a NEW empty project-services directory")
+    p_init.add_argument("--state", required=True)
+    p_init.set_defaults(func=cmd_init_state)
+    p_token = sub.add_parser("token-create", help="provision a project credential; output secret once")
+    p_token.add_argument("--state", required=True)
+    p_token.add_argument("--project", required=True)
+    p_token.add_argument("--principal", required=True)
+    p_token.add_argument("--role", action="append", required=True)
+    p_token.add_argument("--expires-at", type=float)
+    p_token.set_defaults(func=cmd_token_create)
+
+    p_revoke = sub.add_parser("token-revoke", help="revoke one exact credential key ID; restart required")
+    p_revoke.add_argument("--state", required=True)
+    p_revoke.add_argument("--key-id", required=True)
+    p_revoke.set_defaults(func=cmd_token_revoke)
 
     p_server = sub.add_parser("server", help="run the cluster server")
     p_server.add_argument("--host", default="127.0.0.1")
     p_server.add_argument("--port", type=int, default=8765)
     p_server.add_argument("--state", default="./cluster-state")
     p_server.add_argument(
-        "--token",
-        help="legacy single all-rights admin token (or $N4CLUSTER_TOKEN); for RBAC use --principal",
+        "--trusted-tls-proxy", action="store_true", help="acknowledge TLS termination by a trusted proxy"
     )
-    p_server.add_argument(
-        "--principal",
-        action="append",
-        metavar="PRINCIPAL_SPEC",
-        help=(
-            "credential-bound RBAC principal as name/token/roles separated by ':' "
-            "(roles: submitter,executor,viewer,admin; comma-separate to combine; repeatable)"
-        ),
-    )
-    p_server.add_argument(
-        "--auth-file",
-        help='JSON file of [{"name","token","roles":[...]}] principals (alternative to --principal)',
-    )
+    p_server.add_argument("--ssl-keyfile")
+    p_server.add_argument("--ssl-certfile")
     p_server.add_argument("--allow-python-jobs", action="store_true")
     p_server.add_argument("--lease-ttl", type=float, default=60.0)
-    p_server.add_argument("--log-level", default="info")
+    p_server.add_argument("--log-level", choices=LOG_LEVELS, default="info", help="application diagnostics only")
     p_server.add_argument("--log-file", default=None, help="also write logs to this file")
     p_server.add_argument(
         "--cors-origin",
@@ -381,7 +451,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_worker = sub.add_parser("worker", help="run a worker that polls the server")
     p_worker.add_argument("--server", help="server base URL (or $N4CLUSTER_SERVER)")
-    p_worker.add_argument("--token", help="auth token (or $N4CLUSTER_TOKEN)")
+    p_worker.add_argument("--token-file", help="private credential file (or $NIRS4ALL_PROJECT_TOKEN)")
+    p_worker.add_argument("--allow-path-root", action="append", help="allowed shared input root; deny all by default")
+    p_worker.add_argument("--python-exe", help="explicitly provisioned runner Python interpreter")
     p_worker.add_argument("--state", default="./worker-state")
     p_worker.add_argument("--labels", help="comma-separated k=v capability labels")
     p_worker.add_argument("--slots", type=int, default=1)
@@ -395,7 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_worker.add_argument("--allow-python", action="store_true", help="permit python_entrypoint pipelines")
     p_worker.add_argument("--name", default=None)
     p_worker.add_argument("--poll-interval", type=float, default=2.0)
-    p_worker.add_argument("--log-level", default="info")
+    p_worker.add_argument("--log-level", choices=LOG_LEVELS, default="info", help="application diagnostics only")
     p_worker.add_argument("--log-file", default=None, help="also write logs to this file")
     p_worker.set_defaults(func=cmd_worker)
 
@@ -468,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+    except httpx.HTTPError as exc:
+        from .transport_diagnostics import http_failure_diagnostic
+
+        print(f"[n4cluster] transport failure: {http_failure_diagnostic(exc)}", file=sys.stderr)
+        return 3 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403} else 4
     except ClusterPermissionError as exc:
         missing = ", ".join(sorted(exc.missing_rights)) or "?"
         who = f" (as {exc.principal})" if exc.principal else ""
@@ -476,8 +553,8 @@ def main(argv: list[str] | None = None) -> int:
     except ClusterAuthError:
         print("[n4cluster] unauthorized: provide a valid authentication credential", file=sys.stderr)
         return 3
-    except ClusterConnectionError as exc:
-        print(f"[n4cluster] cannot reach server: {exc.message}", file=sys.stderr)
+    except ClusterConnectionError:
+        print("[n4cluster] cannot reach server", file=sys.stderr)
         return 4
     except ClusterVersionError as exc:
         print(f"[n4cluster] {exc}", file=sys.stderr)

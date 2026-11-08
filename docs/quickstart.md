@@ -1,54 +1,24 @@
-# Quickstart
+# Local quickstart
 
-This walkthrough assumes a **trusted LAN**. For a real deployment read
-{doc}`security-and-scope` first.
+Use provisioned Python environments; no dependency installation happens on workers.
+Initialize and provision a fresh state directory as described in cli-reference.md.
+Existing unmarked state is refused untouched.
 
-## 1. Start the coordinator
-
-```{code-block} bash
-n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state
-# optionally set N4CLUSTER_TOKEN via your shell or secret manager; add
-# --allow-python-jobs and --log-file server.log as needed
+```bash
+n4cluster init-state --state ./cluster-state
+umask 077
+n4cluster token-create --state ./cluster-state --project lab --principal consumer --role submitter > consumer.token
+n4cluster token-create --state ./cluster-state --project lab --principal provider --role executor > provider.token
+n4cluster server --state ./cluster-state
+n4cluster worker --server http://127.0.0.1:8765 --token-file provider.token --state ./provider-state --allow-path-root /shared
+n4cluster run --pipeline /shared/pls.yaml --dataset /shared/corn --token-file consumer.token --wait --out ./results
 ```
 
-The server prints its URL and the dashboard address (`http://HOST:8765/ui`).
+Provide separate shells for server/worker/consumer. Credentials select the project
+and permissions. Choose HTTPS for non-loopback clients. The server never consumes
+a secret from NIRS4ALL_PROJECT_TOKEN or N4CLUSTER_TOKEN.
 
-## 2. Start one or more workers
-
-Run on machines that can see `nirs4all` and the datasets. The worker auto-detects GPUs
-(`nvidia-smi`) and advertises a `cuda` label.
-
-```{code-block} bash
-n4cluster worker --server http://HOST:8765 --labels site=lab --slots 1
-# force GPU count with --gpus N (0 hides GPUs); add --log-file as needed
-```
-
-## 3. Submit a job and wait
-
-```{code-block} bash
-n4cluster submit examples/job.shared-path.yaml --wait --out ./results
-n4cluster status   <job_id>
-n4cluster jobs      --status running
-n4cluster logs     <job_id>
-n4cluster cancel   <job_id>
-n4cluster artifacts <job_id> --out ./results
-```
-
-## Python SDK
-
-```{code-block} python
-from nirs4all_cluster import ClusterClient
-
-with ClusterClient("http://host:8765", token=None) as client:
-    job = client.submit_run(
-        pipeline="/shared/pipelines/pls.yaml",   # kind=path
-        dataset="/shared/datasets/corn",         # kind=shared_path
-        params={"random_state": 42},
-    )
-    job = client.wait(job.id)
-    print(job.aggregate.best_metric, job.aggregate.ranking)
-    client.download_best_model(job.id, "best_model.n4a")
-```
-
-A job that provides lists (`pipelines` / `datasets`) decomposes into one task per
-combination — see {doc}`concepts/job-decomposition`.
+Requested export must produce a genuine owner archive or the job fails explicitly.
+--no-export-best-model permits an explicit no-export success. Canonical Core T3/T4
+export is pending; the current supported runner profile is nirs4all-python-n4a-1.0.
+The unchanged /ui live feed needs a future joint frontend migration.

@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from ..client_transport import make_http_client
+from ..content_identity import receive_verified_download
 from ..schemas import RunMetrics, TaskFailure, TaskPayload, TaskResult, WorkerRegister
 from ..versioning import (
     API_VERSION,
@@ -30,9 +32,8 @@ from ..versioning import (
     H_VERSION,
     ClusterVersionError,
     is_divergent,
-    request_headers,
 )
-from .executor import execute_task
+from .executor import execute_task, runner_environment
 from .materialize import build_runner_spec
 
 logger = logging.getLogger("nirs4all_cluster.worker")
@@ -53,16 +54,10 @@ class WorkerAgent:
         poll_interval: float = 2.0,
         python_exe: str | None = None,
         gpu_count: int | None = None,
+        allowed_roots: tuple[Path, ...] = (),
     ):
         self._warned_servers: set[str | None] = set()
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        headers.update(request_headers("worker"))
-        self._http = httpx.Client(
-            base_url=server.rstrip("/"),
-            headers=headers,
-            timeout=120.0,
-            event_hooks={"response": [self._on_response]},
-        )
+        self._http = make_http_client(server, token=token, role="worker", timeout=120.0)
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.labels = labels or {}
@@ -72,6 +67,9 @@ class WorkerAgent:
         self.name = name
         self.poll_interval = poll_interval
         self.python_exe = python_exe
+        self.allowed_roots = allowed_roots
+        self._attempts: set[tuple[str, int]] = set()
+        self._fatal_auth = False
         # gpu_count: None -> auto-detect (nvidia-smi); an int forces the declared
         # count (e.g. 0 to hide GPUs, or N when nvidia-smi is unavailable).
         self.gpu_count_override = gpu_count
@@ -79,12 +77,30 @@ class WorkerAgent:
 
         self.worker_id: str | None = None
         self._heartbeat_interval = 10.0
-        self._cancel_requested: set[str] = set()
+        self._cancel_requested: set[tuple[str, int]] = set()
         self._cancel_lock = threading.Lock()
         self._stop = threading.Event()
         self._active = 0
         self._active_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
+
+    def _post(self, path: str, **kwargs) -> httpx.Response:
+        """Bounded transient retries; auth failure stops the daemon visibly."""
+        for attempt in range(3):
+            try:
+                response = self._http.post(path, **kwargs)
+                if response.status_code == 401:
+                    self._fatal_auth = True
+                    self._stop.set()
+                    logger.error("worker credential rejected; restart with a valid credential")
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as exc:
+                transient = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code >= 500
+                if not transient or attempt == 2:
+                    raise
+                self._stop.wait(0.1 * (attempt + 1))
+        raise RuntimeError("unreachable retry state")
 
     def _declare_gpu(self) -> None:
         """Detect (or force) GPUs and fold them into labels + capabilities.
@@ -149,6 +165,8 @@ class WorkerAgent:
             for t in list(self._threads):
                 t.join(timeout=30)
             self._http.close()
+        if self._fatal_auth:
+            raise RuntimeError("worker stopped: invalid credential")
 
     def stop(self) -> None:
         self._stop.set()
@@ -158,13 +176,14 @@ class WorkerAgent:
             labels=self.labels,
             capabilities=self.capabilities,
             slots_total=self.slots,
-            version=_environment_version(),
+            version=_environment_version(self.python_exe),
             name=self.name,
         )
-        resp = self._http.post("/v1/workers/register", json=reg.model_dump())
+        resp = self._post("/v1/workers/register", json=reg.model_dump())
         resp.raise_for_status()
         data = resp.json()
         self.worker_id = data["worker_id"]
+        self._http.headers["X-N4C-Worker-Secret"] = data["worker_secret"]
         self._heartbeat_interval = data.get("heartbeat_interval_s", 10.0)
         logger.info("registered as %s (slots=%s, labels=%s)", self.worker_id, self.slots, self.labels)
         granted = data.get("rights") or []
@@ -178,9 +197,11 @@ class WorkerAgent:
     def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                resp = self._http.post(f"/v1/workers/{self.worker_id}/heartbeat")
+                with self._active_lock:
+                    active = [{"task_id": t, "attempt": a} for t, a in self._attempts]
+                resp = self._post(f"/v1/workers/{self.worker_id}/heartbeat", json={"active_attempts": active})
                 if resp.status_code == 200:
-                    ids = resp.json().get("cancel_task_ids", [])
+                    ids = [(x["task_id"], x["attempt"]) for x in resp.json().get("cancel_attempts", [])]
                     with self._cancel_lock:
                         self._cancel_requested.update(ids)
             except (httpx.HTTPError, ClusterVersionError):
@@ -197,13 +218,15 @@ class WorkerAgent:
                 self._stop.wait(self.poll_interval)
                 continue
             self._inc_active()
+            with self._active_lock:
+                self._attempts.add((task.task_id, task.attempt))
             t = threading.Thread(target=self._handle_task, args=(task,), name=f"task-{task.task_id}")
             t.start()
             self._threads = [x for x in self._threads if x.is_alive()] + [t]
 
     def _lease(self) -> TaskPayload | None:
         try:
-            resp = self._http.post(f"/v1/workers/{self.worker_id}/lease")
+            resp = self._post(f"/v1/workers/{self.worker_id}/lease")
             resp.raise_for_status()
             payload = resp.json().get("task")
             return TaskPayload.model_validate(payload) if payload else None
@@ -214,15 +237,17 @@ class WorkerAgent:
     # Task handling
     # ------------------------------------------------------------------ #
     def _handle_task(self, task: TaskPayload) -> None:
-        workdir = self.state_dir / "tasks" / task.task_id
+        workdir = (self.state_dir / "tasks" / task.task_id / str(task.attempt)).resolve()
         try:
-            start = self._http.post(f"/v1/tasks/{task.task_id}/start", params={"worker_id": self.worker_id})
+            start = self._post(
+                f"/v1/tasks/{task.task_id}/start", params={"worker_id": self.worker_id, "attempt": task.attempt}
+            )
             if start.status_code != 200:
                 # Task was cancelled/reassigned before we started — abandon it
                 # without doing (or reporting) any work.
                 return
             try:
-                spec = build_runner_spec(task, workdir, self._download_artifact)
+                spec = build_runner_spec(task, workdir, self._download_artifact, allowed_roots=self.allowed_roots)
             except (NotImplementedError, FileNotFoundError, ValueError) as exc:
                 # Deterministic input errors can never succeed on retry.
                 self._report_fail(task, f"materialize error: {type(exc).__name__}: {exc}", retriable=False)
@@ -232,7 +257,7 @@ class WorkerAgent:
                 workdir,
                 allow_python=self.allow_python,
                 python_exe=self.python_exe,
-                cancel_check=lambda: self._is_cancelled(task.task_id),
+                cancel_check=lambda: self._is_cancelled(task.task_id, task.attempt),
                 on_tick=lambda elapsed: self._emit_progress(task, elapsed),
             )
             status = exec_result.result.get("status")
@@ -243,13 +268,18 @@ class WorkerAgent:
             else:
                 error = exec_result.result.get("error", "unknown runner failure")
                 self._upload_log(task, exec_result.log_path)
-                self._report_fail(task, error, retriable=True)
+                self._report_fail(task, error, retriable=exec_result.result.get("retriable", True))
         except Exception as exc:  # noqa: BLE001 - agent must keep running
-            self._report_fail(task, f"agent error: {type(exc).__name__}: {exc}", retriable=True)
+            from ..transport_diagnostics import http_failure_diagnostic
+
+            detail = http_failure_diagnostic(exc) if isinstance(exc, httpx.HTTPError) else f"{type(exc).__name__}: {exc}"
+            self._report_fail(task, f"agent error: {detail}", retriable=True)
         finally:
             with self._cancel_lock:
-                self._cancel_requested.discard(task.task_id)
+                self._cancel_requested.discard((task.task_id, task.attempt))
             self._cleanup(task, workdir)
+            with self._active_lock:
+                self._attempts.discard((task.task_id, task.attempt))
             self._dec_active()
 
     def _report_success(self, task: TaskPayload, exec_result: Any, pipeline_fingerprint: str | None) -> None:
@@ -257,8 +287,12 @@ class WorkerAgent:
         artifacts: dict[str, str | None] = {"model": None, "logs": None, "workspace": None}
 
         model_path = (summary.get("produced") or {}).get("model")
+        if task.outputs.export_best_model and (not model_path or not Path(model_path).is_file()):
+            raise ValueError("requested model export is incomplete")
         if model_path and Path(model_path).exists():
-            artifacts["model"] = self._upload(task.task_id, Path(model_path), role="model", kind="model")
+            artifacts["model"] = self._upload(
+                task.task_id, Path(model_path), attempt=task.attempt, role="model", kind="model"
+            )
         artifacts["logs"] = self._upload_log(task, exec_result.log_path)
         trace = (summary.get("extra") or {}).get("robustness_evidence_publication_trace")
         evidence_workspace = isinstance(trace, dict) and bool(
@@ -266,7 +300,9 @@ class WorkerAgent:
         )
         if (task.outputs.keep_task_workspace or evidence_workspace) and exec_result.workspace_path.exists():
             zipped = self._zip_dir(exec_result.workspace_path, exec_result.workspace_path.parent / "workspace.zip")
-            artifacts["workspace"] = self._upload(task.task_id, zipped, role="workspace", kind="workspace")
+            artifacts["workspace"] = self._upload(
+                task.task_id, zipped, attempt=task.attempt, role="workspace", kind="workspace"
+            )
         if evidence_workspace and not artifacts["workspace"]:
             raise RuntimeError("Robustness evidence workspace upload failed; evidence is not delivered")
 
@@ -285,13 +321,14 @@ class WorkerAgent:
             counts=summary.get("counts", {}),
             artifacts=artifacts,
             extra=extra,
+            delivery=summary.get("delivery", {}),
         )
-        logger.info("task %s succeeded (%.1fs)", task.task_id, result.duration_seconds)
-        self._http.post(
+        self._post(
             f"/v1/tasks/{task.task_id}/complete",
-            params={"worker_id": self.worker_id},
+            params={"worker_id": self.worker_id, "attempt": task.attempt},
             json=result.model_dump(),
         )
+        logger.info("task %s accepted by server (%.1fs)", task.task_id, result.duration_seconds)
 
     def _report_fail(self, task: TaskPayload, error: str, *, retriable: bool) -> None:
         logger.warning(
@@ -299,13 +336,13 @@ class WorkerAgent:
         )
         failure = TaskFailure(error=error[:4000], retriable=retriable)
         try:
-            self._http.post(
+            self._post(
                 f"/v1/tasks/{task.task_id}/fail",
-                params={"worker_id": self.worker_id},
+                params={"worker_id": self.worker_id, "attempt": task.attempt},
                 json=failure.model_dump(),
             )
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as exc:
+            logger.error("failure report was not accepted (%s)", type(exc).__name__)
 
     @staticmethod
     def _attach_robustness_artifact_refs(extra: dict[str, Any], artifacts: dict[str, str | None]) -> None:
@@ -323,8 +360,9 @@ class WorkerAgent:
 
     def _emit_progress(self, task: TaskPayload, elapsed: float) -> None:
         try:
-            self._http.post(
+            self._post(
                 f"/v1/tasks/{task.task_id}/events",
+                params={"worker_id": self.worker_id, "attempt": task.attempt},
                 json={"type": "progress", "message": f"running ({elapsed:.0f}s elapsed)", "level": "info"},
             )
         except httpx.HTTPError:
@@ -334,38 +372,39 @@ class WorkerAgent:
     # Artifact transfer
     # ------------------------------------------------------------------ #
     def _download_artifact(self, artifact_id: str, dest: Path) -> Path:
-        dest.parent.mkdir(parents=True, exist_ok=True)
         with self._http.stream("GET", f"/v1/artifacts/{artifact_id}") as resp:
             resp.raise_for_status()
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_bytes():
-                    fh.write(chunk)
-        return dest
+            return receive_verified_download(resp, dest)
 
-    def _upload(self, task_id: str, path: Path, *, role: str, kind: str) -> str | None:
+    def _upload(self, task_id: str, path: Path, *, attempt: int, role: str, kind: str) -> str | None:
         try:
             with open(path, "rb") as fh:
-                resp = self._http.post(
+                resp = self._post(
                     f"/v1/tasks/{task_id}/artifacts",
-                    params={"role": role, "kind": kind},
+                    params={
+                        "role": role,
+                        "kind": kind,
+                        "worker_id": self.worker_id,
+                        "attempt": attempt,
+                    },
                     files={"file": (path.name, fh, "application/octet-stream")},
                 )
             resp.raise_for_status()
             return resp.json()["artifact_id"]
         except httpx.HTTPError:
-            return None
+            raise
 
     def _upload_log(self, task: TaskPayload, log_path: Path) -> str | None:
         if log_path.exists():
-            return self._upload(task.task_id, log_path, role="logs", kind="log")
+            return self._upload(task.task_id, log_path, attempt=task.attempt, role="logs", kind="log")
         return None
 
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
-    def _is_cancelled(self, task_id: str) -> bool:
+    def _is_cancelled(self, task_id: str, attempt: int) -> bool:
         with self._cancel_lock:
-            return task_id in self._cancel_requested
+            return (task_id, attempt) in self._cancel_requested
 
     def _active_count(self) -> int:
         with self._active_lock:
@@ -382,6 +421,11 @@ class WorkerAgent:
     def _cleanup(self, task: TaskPayload, workdir: Path) -> None:
         if not task.outputs.keep_task_workspace and workdir.exists():
             shutil.rmtree(workdir, ignore_errors=True)
+            if workdir.parent.parent == (self.state_dir / "tasks").resolve():
+                try:
+                    workdir.parent.rmdir()
+                except OSError:
+                    pass
 
     @staticmethod
     def _zip_dir(src: Path, dest: Path) -> Path:
@@ -390,21 +434,6 @@ class WorkerAgent:
                 if path.is_file():
                     zf.write(path, path.relative_to(src))
         return dest
-
-
-# Packages whose installed version the worker advertises so the server can route
-# on them (design: "compat environnements Python lourds (TF/Torch/JAX)").
-_ADVERTISED_PACKAGES = (
-    "nirs4all",
-    "numpy",
-    "scipy",
-    "scikit-learn",
-    "pandas",
-    "polars",
-    "torch",
-    "tensorflow",
-    "jax",
-)
 
 
 def _detect_gpu() -> dict[str, Any]:
@@ -456,22 +485,44 @@ def _detect_gpu() -> dict[str, Any]:
     return info
 
 
-def _environment_version() -> dict[str, Any]:
-    import importlib.metadata as md
-    import platform
+def _environment_version(python_exe: str | None = None) -> dict[str, Any]:
+    import json
     import sys
+    import tempfile
 
-    packages: dict[str, str] = {}
-    for name in _ADVERTISED_PACKAGES:
-        try:
-            packages[name] = md.version(name)
-        except md.PackageNotFoundError:
-            continue
+    # Probe the actual provisioned child, including dependency and Python routing.
+    # Never substitute the transport agent's environment for a distinct runner.
+    runtime: dict[str, Any] = {}
+    failure = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="n4cluster-runtime-probe-") as neutral:
+            probe = subprocess.run(
+                [python_exe or sys.executable, "-m", "nirs4all_cluster.runners.nirs4all_run", "--environment-version"],
+                env=runner_environment(),
+                cwd=neutral,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        if probe.returncode == 0:
+            runtime = json.loads(probe.stdout.strip().splitlines()[-1])
+        else:
+            # Keep exception class/message from the final traceback line, with any
+            # token-bearing text redacted by the Cluster diagnostic helper.
+            from ..credentials import safe_diagnostic
+
+            failure = safe_diagnostic(
+                probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else "child exited without diagnostics"
+            )
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        failure = type(exc).__name__
+    if failure:
+        logger.error("runner environment unavailable; provider cannot execute science jobs: %s", failure)
     return {
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "executable": sys.executable,
+        "python": runtime.get("python"),
+        "platform": runtime.get("platform"),
+        "executable": runtime.get("executable", python_exe or sys.executable),
         "nirs4all_cluster": CLUSTER_VERSION,
         "api_version": API_VERSION,
-        "packages": packages,
+        "packages": runtime.get("packages", {}),
     }

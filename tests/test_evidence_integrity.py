@@ -5,12 +5,12 @@ import types
 import zipfile
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_support import TestClient, create_app
 from test_worker import _install_fake_numpy, _MiniArray, _native_payload
 
 from nirs4all_cluster.runners import nirs4all_run as runner
 from nirs4all_cluster.schemas import NativeExperimentLaunchPayload, TaskPayload
-from nirs4all_cluster.server.app import ServerConfig, create_app
+from nirs4all_cluster.server.app import ServerConfig
 from nirs4all_cluster.worker.agent import WorkerAgent
 
 
@@ -19,6 +19,7 @@ def job(payload):
         "pipeline": {"kind": "path", "path": "/p"},
         "dataset": {"kind": "shared_path", "path": "/d"},
         "nativePayload": payload,
+        "outputs": {"export_best_model": False},
     }
 
 
@@ -117,6 +118,7 @@ def test_evidence_workspace_uploaded_and_downloadable_after_default_cleanup(tmp_
         agent._http.close()
         agent._http = client
         agent.worker_id = wid
+        agent._attempts.add((task.task_id,task.attempt))
         workdir = tmp_path / "work"
         workspace = workdir / "workspace"
         workspace.mkdir(parents=True)
@@ -129,7 +131,9 @@ def test_evidence_workspace_uploaded_and_downloadable_after_default_cleanup(tmp_
             "publication_summary": {"workspace_required": True},
         }
         execution = types.SimpleNamespace(
-            result={"extra": {"robustness_evidence_publication_trace": trace}}, workspace_path=workspace, log_path=log
+            result={"delivery": {"status": "not_requested"}, "extra": {"robustness_evidence_publication_trace": trace}},
+            workspace_path=workspace,
+            log_path=log,
         )
         assert task.outputs.keep_task_workspace is False
         agent._report_success(task, execution, None)
@@ -151,6 +155,7 @@ def test_failed_evidence_workspace_upload_prevents_success_report(tmp_path, monk
         pipeline={"kind": "path", "path": "/p"},
         dataset={"kind": "shared_path", "path": "/d"},
         lease_expires_at=100,
+        outputs={"export_best_model": False},
     )
     agent = WorkerAgent("http://unused", state_dir=tmp_path / "agent")
     workspace = tmp_path / "workspace"

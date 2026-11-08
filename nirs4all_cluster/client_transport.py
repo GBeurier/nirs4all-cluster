@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+from nirs4all_access import require_secure_transport
 
 from .client_errors import ClusterConnectionError, raise_for_response
 from .versioning import (
@@ -50,6 +52,27 @@ def make_http_client(
     ``transport`` lets a caller (or a test) inject an in-process ASGI transport; when
     ``None`` the default networking transport is used.
     """
+    try:
+        if not isinstance(base_url, str):
+            raise ValueError
+        address = urlsplit(base_url)
+        parsed = httpx.URL(base_url)
+        if (
+            "?" in base_url
+            or "#" in base_url
+            or "@" in address.netloc
+            or address.scheme not in {"http", "https"}
+            or not address.hostname
+            or not parsed.host
+            or parsed.userinfo
+            or any(ord(c) < 32 or ord(c) == 127 for c in base_url)
+        ):
+            raise ValueError
+        _ = address.port  # Validate malformed/out-of-range ports before transport construction.
+    except (ValueError, TypeError, httpx.InvalidURL):
+        raise ValueError("invalid server base URL; require HTTP(S) without userinfo, query or fragment") from None
+    if token:
+        require_secure_transport(address.hostname or "", tls=address.scheme == "https")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     headers.update(request_headers(role))
     warned: set[str | None] = set()

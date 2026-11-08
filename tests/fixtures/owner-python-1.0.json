@@ -1,0 +1,37 @@
+{
+  "profile": "nirs4all-python-n4a-1.0",
+  "bundle_format_version": "1.0",
+  "owner_version": "1.4.15",
+  "sha256": "7018d72a5b40e5b2afe4c7bee55f13f7de2a988f8600fa873c837319d2b7b66b",
+  "size_bytes": 8677,
+  "canonical_core": false,
+  "producer": "nirs4all.run -> RunResult.export -> owner load_bundle and artifact provider (existing runner)",
+  "dataset": "deterministic synthetic latent spectra; no external corpus or row-level source data",
+  "rights": {
+    "synthetic_inputs": "CC0-1.0",
+    "external_data": false,
+    "archive_distribution": "nirs4all-cluster project dual license (CeCILL-2.1 OR AGPL-3.0-or-later)"
+  },
+  "generator": "tests/fixtures/generate_synthetic_fixture.py",
+  "generator_sha256": "4b2ea2a1a74c3473db554730b7c7492b2384d8f9e2a00a9ec4b7f22fb43864d2",
+  "seed": 20261104,
+  "input_hashes": {
+    "Xtest.csv": "7d49948d90156aa88204f759884111a0ed9b4d01c5e58b560f96d7290ba6fb9b",
+    "Xtrain.csv": "e42cf9f0b9d5fa2d8cd2ff5fdc1244dd46cc7341a911f35ce1784a3808d9b705",
+    "Ytest.csv": "28bfe27e616c7e6c1c4d9f714c22ad0d8c028b0d84b3bd5f14f509721426f287",
+    "Ytrain.csv": "8ce4c7e7041b67dee76638c9860079f50ab9c50ec57490e28b3cc09877f709af"
+  },
+  "rows": {
+    "train": 64,
+    "test": 16
+  },
+  "features": 8,
+  "pipeline": "examples/pipelines/pls.yaml",
+  "pipeline_sha256": "15c13887b3c7fa797436981bd5668176affbcd785e681d663f4e976897f0c66d",
+  "random_state": 20261104,
+  "provenance": {
+    "purpose": "synthetic model transport fixture",
+    "scientific_owner": "nirs4all",
+    "control_credentials_supplied": false
+  }
+}

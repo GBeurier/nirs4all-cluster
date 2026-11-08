@@ -6,9 +6,9 @@ nirs4all, so they are fast and dependency-free.
 """
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_support import TestClient, create_app
 
-from nirs4all_cluster.server.app import ServerConfig, create_app
+from nirs4all_cluster.server.app import ServerConfig
 
 
 @pytest.fixture
@@ -19,13 +19,14 @@ def client(tmp_path):
         yield c
 
 
-def test_auth_required_when_token_set(tmp_path):
-    config = ServerConfig(state_dir=str(tmp_path / "state"), token="s")
+def test_auth_required_by_default(tmp_path):
+    from auth_support import TOKEN
+
+    config = ServerConfig(state_dir=str(tmp_path / "state"))
     with TestClient(create_app(config)) as c:
-        assert c.get("/v1/jobs").status_code == 401
-        assert c.get("/v1/jobs", headers={"Authorization": "Bearer w"}).status_code == 401
-        ok = c.get("/v1/jobs", headers={"Authorization": "Bearer s"})
-        assert ok.status_code == 200
+        assert c.get("/v1/jobs", headers={"Authorization": ""}).status_code == 401
+        assert c.get("/v1/jobs", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        assert c.get("/v1/jobs", headers={"Authorization": "Bearer " + TOKEN}).status_code == 200
 
 
 def test_input_artifact_size_limit(tmp_path):
@@ -56,13 +57,14 @@ def _lease(client, worker_id):
     return resp.json()["task"]
 
 
-def _complete(client, worker_id, task_id, metrics, artifacts=None):
+def _complete(client, worker_id, task_id, metrics, artifacts=None, delivery=None):
     body = {
         "status": "succeeded",
         "nirs4all_version": "0.9.1",
         "duration_seconds": 1.0,
         "metrics": metrics,
         "counts": {"num_predictions": 3},
+        "delivery": delivery or {"status": "not_requested"},
         "artifacts": artifacts or {"model": None, "logs": None, "workspace": None},
     }
     resp = client.post(f"/v1/tasks/{task_id}/complete", params={"worker_id": worker_id}, json=body)
@@ -77,6 +79,7 @@ def _atomic_job(pipeline="/shared/pls.yaml", dataset="/shared/corn"):
         "pipeline": {"kind": "path", "path": pipeline},
         "dataset": {"kind": "shared_path", "path": dataset},
         "params": {"random_state": 42},
+        "outputs": {"export_best_model": False},
     }
 
 
@@ -239,6 +242,7 @@ def test_matrix_decomposition_and_ranking(client):
             {"kind": "shared_path", "path": "/b", "name": "B"},
             {"kind": "shared_path", "path": "/c", "name": "C"},
         ],
+        "outputs": {"export_best_model": False},
         "rank_metric": "best_rmse",
         "rank_mode": "min",
     }
@@ -261,17 +265,33 @@ def test_matrix_decomposition_and_ranking(client):
 
 
 def test_artifact_upload_download_and_best_model_link(client):
-    job = client.post("/v1/jobs", json=_atomic_job()).json()
+    req = _atomic_job()
+    req["outputs"]["export_best_model"] = True
+    job = client.post("/v1/jobs", json=req).json()
     worker = _register(client)
     task = _lease(client, worker)
     client.post(f"/v1/tasks/{task['task_id']}/start", params={"worker_id": worker}).raise_for_status()
 
+    # Transport-only synthetic bytes: the server does not scientifically certify a trusted provider.
     files = {"file": ("best_model.n4a", b"FAKE-N4A-BYTES", "application/octet-stream")}
     up = client.post(
         f"/v1/tasks/{task['task_id']}/artifacts", params={"role": "model", "kind": "model"}, files=files
     ).json()
     artifact_id = up["artifact_id"]
-    _complete(client, worker, task["task_id"], {"best_rmse": 0.3}, artifacts={"model": artifact_id})
+    _complete(
+        client,
+        worker,
+        task["task_id"],
+        {"best_rmse": 0.3},
+        artifacts={"model": artifact_id},
+        delivery={
+            "status": "exported",
+            "profile": "synthetic-transport-test",
+            "bundle_format_version": "test",
+            "sha256": up["sha256"],
+            "size_bytes": up["size_bytes"],
+        },
+    )
 
     arts = client.get(f"/v1/jobs/{job['id']}/artifacts").json()
     roles = {a["role"] for a in arts}
@@ -279,6 +299,60 @@ def test_artifact_upload_download_and_best_model_link(client):
     # download round-trips the bytes
     dl = client.get(f"/v1/artifacts/{artifact_id}")
     assert dl.content == b"FAKE-N4A-BYTES"
+
+
+def _canonical_delivery(up, **overrides):
+    delivery = {
+        "status": "exported",
+        "profile": "nirs4all.n4a.container.v1",
+        "physical_profile": "synthetic.physical.v1",
+        "container_id": "container:synthetic",
+        "owner_identities": {"model": "fp-model", "run": "fp-run", "result": "fp-result", "score": "fp-score"},
+        "owner_version": "9.9.9",
+        "sha256": up["sha256"],
+        "size_bytes": up["size_bytes"],
+        "canonical_core": True,
+    }
+    delivery.update(overrides)
+    return delivery
+
+
+def test_canonical_delivery_metadata_is_stored_opaquely_and_gated(client):
+    """A canonical delivery has no bundle version; the server stores it without parsing archives."""
+    req = _atomic_job()
+    req["outputs"]["export_best_model"] = True
+    job = client.post("/v1/jobs", json=req).json()
+    worker = _register(client)
+    task = _lease(client, worker)
+    client.post(f"/v1/tasks/{task['task_id']}/start", params={"worker_id": worker}).raise_for_status()
+    up = client.post(
+        f"/v1/tasks/{task['task_id']}/artifacts",
+        params={"role": "model", "kind": "model"},
+        files={"file": ("best_model.n4a", b"SYNTHETIC-CANONICAL-BYTES", "application/octet-stream")},
+    ).json()
+    complete = f"/v1/tasks/{task['task_id']}/complete"
+
+    def post(delivery):
+        body = {
+            "status": "succeeded",
+            "metrics": {"best_rmse": 0.3},
+            "artifacts": {"model": up["artifact_id"]},
+            "delivery": delivery,
+        }
+        return client.post(complete, params={"worker_id": worker}, json=body)
+
+    # Refused: no profile, neither a bundle version nor a container id, or bytes that differ from the upload.
+    assert post(_canonical_delivery(up, profile=None)).status_code == 409
+    assert post(_canonical_delivery(up, container_id=None)).status_code == 409
+    assert post(_canonical_delivery(up, sha256="0" * 64)).status_code == 409
+
+    assert post(_canonical_delivery(up)).status_code == 200
+    stored = client.get(f"/v1/jobs/{job['id']}/tasks").json()[0]["result"]["delivery"]
+    assert stored["container_id"] == "container:synthetic"
+    assert stored["physical_profile"] == "synthetic.physical.v1"
+    assert stored["owner_identities"]["score"] == "fp-score"
+    assert stored["bundle_format_version"] is None and stored["canonical_core"] is True
+    assert client.get(f"/v1/artifacts/{up['artifact_id']}").content == b"SYNTHETIC-CANONICAL-BYTES"
 
 
 def test_cancel_queued_job_not_relaunched(client):
@@ -481,6 +555,7 @@ def test_best_model_uses_latest_winner_in_matrix(client):
             {"kind": "shared_path", "path": "/a", "name": "A"},
             {"kind": "shared_path", "path": "/b", "name": "B"},
         ],
+        "outputs": {"export_best_model": True},
         "rank_metric": "best_rmse",
         "rank_mode": "min",
     }
@@ -498,7 +573,20 @@ def test_best_model_uses_latest_winner_in_matrix(client):
             f"/v1/tasks/{task['task_id']}/artifacts", params={"role": "model", "kind": "model"}, files=files
         ).json()
         art_by_ds[ds] = up["artifact_id"]
-        _complete(client, worker, task["task_id"], {"best_rmse": order[ds]}, artifacts={"model": up["artifact_id"]})
+        _complete(
+            client,
+            worker,
+            task["task_id"],
+            {"best_rmse": order[ds]},
+            artifacts={"model": up["artifact_id"]},
+            delivery={
+                "status": "exported",
+                "profile": "synthetic-transport-test",
+                "bundle_format_version": "test",
+                "sha256": up["sha256"],
+                "size_bytes": up["size_bytes"],
+            },
+        )
 
     job = client.get(f"/v1/jobs/{job['id']}").json()
     # Exactly one best_model link, pointing at the better (B) model.

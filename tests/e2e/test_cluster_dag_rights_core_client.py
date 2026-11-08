@@ -26,13 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
 NUMERIC_PIPELINE = REPO_ROOT / "examples" / "pipelines" / "pls.yaml"
 NUMERIC_DATASET_NAME = "_".join(("PSI", "spxyG70", "30", "byCultivar", "MicroNIR", "NeoSpectra"))
-NUMERIC_DATASET = (
-    WORKSPACE_ROOT
-    / "nirs4all-data"
-    / "regression"
-    / "GRAPEVINE_LeafTraits"
-    / NUMERIC_DATASET_NAME
-)
+NUMERIC_DATASET = WORKSPACE_ROOT / "nirs4all-data" / "regression" / "GRAPEVINE_LeafTraits" / NUMERIC_DATASET_NAME
 NUMERIC_ORACLE_ARTIFACT = "local-vs-cluster-numeric.json"
 
 
@@ -119,7 +113,7 @@ def _run_numeric_oracle(
         params={"random_state": 42, "refit": True},
         inner_n_jobs=1,
         requirements={"labels": {"site": "e2e-lab"}, "packages": {"nirs4all": ">=0.9"}},
-        outputs={"export_best_model": True, "keep_task_workspace": False},
+        outputs={"export_best_model": False, "keep_task_workspace": False},
         name="e2e-cluster-numeric-oracle",
         rank_metric="best_rmse",
         rank_mode="min",
@@ -127,10 +121,12 @@ def _run_numeric_oracle(
     task = worker.lease()
     if task is None:
         raise AssertionError("numeric oracle job was not leased by the eligible worker")
-    worker.start_task(task.task_id)
+    worker.start_task(task.task_id, attempt=task.attempt)
 
     workdir = tmp_path / "numeric-oracle-worker" / task.task_id
-    spec = build_runner_spec(task, workdir, worker.download_artifact)
+    spec = build_runner_spec(
+        task, workdir, worker.download_artifact, allowed_roots=(tmp_path, pipeline.parent, dataset)
+    )
     pythonpath_entries = [str(REPO_ROOT), str(WORKSPACE_ROOT / "nirs4all")]
     previous_pythonpath = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = os.pathsep.join(
@@ -151,12 +147,17 @@ def _run_numeric_oracle(
     model_artifact_id = None
     model_path = produced.get("model")
     if model_path and Path(model_path).exists():
-        model_artifact_id = worker.upload_artifact(task.task_id, model_path, role="model", kind="model")
-    logs_artifact_id = worker.upload_artifact(task.task_id, execution.log_path, role="logs", kind="logs")
+        model_artifact_id = worker.upload_artifact(
+            task.task_id, model_path, role="output", kind="blob", attempt=task.attempt
+        )
+    logs_artifact_id = worker.upload_artifact(
+        task.task_id, execution.log_path, role="logs", kind="logs", attempt=task.attempt
+    )
     metrics = RunMetrics.model_validate(execution.result.get("metrics") or {})
     worker.complete_task(
         task.task_id,
         TaskResult(
+            delivery={"status": "not_requested"},
             nirs4all_version=execution.result.get("nirs4all_version"),
             pipeline_fingerprint=spec.get("pipeline_fingerprint"),
             duration_seconds=float(execution.result.get("duration_seconds") or 0.0),
@@ -165,6 +166,7 @@ def _run_numeric_oracle(
             artifacts={"model": model_artifact_id, "logs": logs_artifact_id, "workspace": None},
             extra={**(execution.result.get("extra") or {}), "numeric_oracle": True},
         ),
+        attempt=task.attempt,
     )
 
     final = submitter.wait(job.id, poll=0.2, timeout=180)
@@ -236,17 +238,17 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
         with pytest.raises(ClusterPermissionError) as viewer_submit:
             viewer.submit_nirs4all_run(**_permission_probe_kwargs())
         assert viewer_submit.value.principal == "dash"
-        assert "submit" in viewer_submit.value.missing_rights
+        assert "cluster.submit" in viewer_submit.value.missing_rights
 
         with pytest.raises(ClusterPermissionError) as executor_submit:
             executor_as_client.submit_nirs4all_run(**_permission_probe_kwargs())
         assert executor_submit.value.principal == "worker1"
-        assert "submit" in executor_submit.value.missing_rights
+        assert "cluster.submit" in executor_submit.value.missing_rights
 
         with pytest.raises(ClusterPermissionError) as viewer_execute:
             viewer_as_worker.register(name="viewer-cannot-execute")
         assert viewer_execute.value.principal == "dash"
-        assert "execute" in viewer_execute.value.missing_rights
+        assert "cluster.execute" in viewer_execute.value.missing_rights
 
         dataset_artifact_id = submitter.upload_artifact(dataset_payload, kind="dataset")
         job = submitter.submit_nirs4all_run(
@@ -260,7 +262,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             ],
             params={"random_state": 13, "inner_n_jobs": 1},
             requirements={"labels": {"site": "e2e-lab"}, "packages": {"nirs4all": ">=0.9,<0.10"}},
-            outputs={"export_best_model": True, "keep_task_workspace": False},
+            outputs={"export_best_model": False, "keep_task_workspace": False},
             name="e2e-cluster-dag-rights",
             rank_metric="best_rmse",
             rank_mode="min",
@@ -271,7 +273,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
         assert initial.scheduler.shape == "dag_shaped_whole_run"
         assert initial.submission is not None
         assert initial.submission.principal == "alice"
-        assert set(initial.submission.granted_rights) == {"submit", "read", "cancel"}
+        assert set(initial.submission.granted_rights) == {"cluster.submit", "cluster.read", "cluster.cancel"}
         assert len(submitter.get_tasks(job.id)) == 4
 
         missing_package = worker.register(
@@ -281,7 +283,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             version={"packages": {}},
             name="missing-nirs4all",
         )
-        assert "execute" in missing_package.rights
+        assert "cluster.execute" in missing_package.rights
         assert worker.lease() is None
 
         wrong_version = worker.register(
@@ -291,7 +293,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             version={"packages": {"nirs4all": "0.8.9"}},
             name="wrong-nirs4all-version",
         )
-        assert "execute" in wrong_version.rights
+        assert "cluster.execute" in wrong_version.rights
         assert worker.lease() is None
 
         wrong_site = worker.register(
@@ -301,7 +303,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             version={"packages": {"nirs4all": "0.9.5"}},
             name="wrong-site",
         )
-        assert "execute" in wrong_site.rights
+        assert "cluster.execute" in wrong_site.rights
         assert worker.lease() is None
 
         registered = worker.register(
@@ -311,7 +313,7 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             version={"packages": {"nirs4all": "0.9.5"}},
             name="e2e-executor",
         )
-        assert set(registered.rights) == {"read", "execute"}
+        assert set(registered.rights) == {"cluster.read", "cluster.execute"}
 
         completed_task_ids: list[str] = []
         model_artifact_ids: list[str] = []
@@ -325,20 +327,23 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
             assert task.assignment is not None
             assert task.assignment.executor_principal == "worker1"
             assert task.assignment.worker_id == registered.worker_id
-            assert task.assignment.required_rights == ["execute"]
-            assert set(task.assignment.granted_rights) == {"read", "execute"}
+            assert task.assignment.required_rights == ["cluster.execute"]
+            assert set(task.assignment.granted_rights) == {"cluster.read", "cluster.execute"}
 
-            worker.start_task(task.task_id)
+            worker.start_task(task.task_id, attempt=task.attempt)
             model_path = tmp_path / f"model-{index}.json"
             model_path.write_text(
                 json.dumps({"task_id": task.task_id, "pipeline": task.pipeline.kind}, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            model_artifact_id = worker.upload_artifact(task.task_id, model_path, role="model", kind="model")
+            model_artifact_id = worker.upload_artifact(
+                task.task_id, model_path, role="output", kind="blob", attempt=task.attempt
+            )
             model_artifact_ids.append(model_artifact_id)
             worker.complete_task(
                 task.task_id,
                 TaskResult(
+                    delivery={"status": "not_requested"},
                     nirs4all_version="0.9.5",
                     pipeline_fingerprint=(
                         fingerprint_obj(task.pipeline.inline)
@@ -348,9 +353,10 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
                     duration_seconds=0.01 + index,
                     metrics=RunMetrics(best_rmse=0.25 + index * 0.01, best_r2=0.9 - index * 0.01),
                     counts={"samples": 12, "features": 8},
-                    artifacts={"model": model_artifact_id, "logs": None, "workspace": None},
+                    artifacts={"output": model_artifact_id, "logs": None, "workspace": None},
                     extra={"dataset": task.dataset.label(), "pipeline": task.pipeline.kind},
                 ),
+                attempt=task.attempt,
             )
             completed_task_ids.append(task.task_id)
 
@@ -372,13 +378,13 @@ def test_cluster_dag_rights_core_client_handoff(cluster, artifacts_dir: Path, tm
     assert final.aggregate.num_succeeded == 4
     assert final.aggregate.best_metric == pytest.approx(0.25, abs=1e-12)
     assert final.aggregate.best_task_id in completed_task_ids
-    assert final.aggregate.best_model_artifact_id in model_artifact_ids
+    assert final.aggregate.best_model_artifact_id is None
     assert {task.status.value for task in tasks} == {"succeeded"}
     assert all(task.result is not None for task in tasks)
     assert all(task.result and task.result.provenance.reported_by_principal == "worker1" for task in tasks)
     event_types = {event.type for event in events}
     assert {"job_submitted", "task_leased", "task_started", "task_completed", "job_succeeded"} <= event_types
-    assert any(artifact["role"] == "best_model" for artifact in artifacts)
+    assert any(artifact["role"] == "output" for artifact in artifacts)
 
     out = artifacts_dir / "scheduler-run.json"
     out.write_text(
