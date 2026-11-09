@@ -27,6 +27,20 @@ GitHub Release is published (or via `workflow_dispatch`). Pushing to `main` neve
       `python -c "import nirs4all_cluster as m; print(m.__version__)"`.
 - [ ] Start the next `## [Unreleased]` CHANGELOG section.
 
+## Access package publication
+
+- [ ] Run `release-access.yml` with `workflow_dispatch` for a build-only Linux/Python 3.11 gate:
+      strict Twine metadata and the existing installed `-I` vector checker must pass for both
+      wheel and sdist. Review the `access-dist` artifact and its logged SHA-256 hashes.
+- [ ] Confirm the PyPI trusted publisher (pending publisher for a new project): project
+      `nirs4all-access`, owner `GBeurier`, repository `nirs4all-cluster`, workflow
+      `release-access.yml`, environment `pypi`. The Cluster publisher grants no Access authority;
+      no PAT fallback is used. The GitHub `pypi` environment rules must allow `access-v0.1.0`.
+- [ ] For publication, push only `access-v<version>` (initially `access-v0.1.0`) on the reviewed
+      commit containing the workflow. The stable tag, project version and installed version must
+      match. The tag run publishes its checked wheel and sdist without rebuilding.
+      Do not create a GitHub Release or dispatch `release.yml`: those publish Cluster.
+
 ## Notes / residual risks
 
 - Multi-registry fan-out is single-registry (PyPI) here, so no cross-registry partial-failure risk.

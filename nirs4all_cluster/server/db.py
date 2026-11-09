@@ -8,6 +8,9 @@ a separate broker. All time values are float epoch seconds.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import hmac
 import json
 import sqlite3
 import threading
@@ -79,6 +82,7 @@ CREATE TABLE IF NOT EXISTS workers (
     id                TEXT PRIMARY KEY,
     name              TEXT,
     principal         TEXT,
+    secret_hash       TEXT,
     status            TEXT NOT NULL,
     created_at        REAL NOT NULL,
     last_seen_at      REAL NOT NULL,
@@ -118,8 +122,9 @@ CREATE TABLE IF NOT EXISTS job_artifacts (
     job_id      TEXT NOT NULL,
     task_id     TEXT,
     role        TEXT NOT NULL,
+    attempt     INTEGER NOT NULL DEFAULT 0,
     artifact_id TEXT NOT NULL,
-    PRIMARY KEY (job_id, task_id, role)
+    PRIMARY KEY (job_id, task_id, attempt, role)
 );
 CREATE INDEX IF NOT EXISTS idx_jobart_job ON job_artifacts(job_id);
 """
@@ -151,9 +156,7 @@ class Database:
 
     def _migrate_schema(self) -> None:
         """Apply additive migrations for SQLite files created by older betas."""
-        worker_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(workers)").fetchall()}
-        if "principal" not in worker_cols:
-            self._conn.execute("ALTER TABLE workers ADD COLUMN principal TEXT")
+        pass  # New project-services state only; legacy roots are refused before opening.
 
     # --------------------------------------------------------------------- #
     # Jobs
@@ -195,13 +198,23 @@ class Database:
         for pipeline in req.pipeline_list():
             for dataset in req.dataset_list():
                 task_id = _gen_id("task")
-                payload = {
+                payload: dict[str, Any] = {
                     "type": req.type,
                     "pipeline": pipeline.model_dump(),
                     "dataset": dataset.model_dump(),
                     "params": req.params,
                     "outputs": req.outputs.model_dump(),
                 }
+                refs = [pipeline, dataset]
+                payload["input_artifacts"] = {}
+                for ref in refs:
+                    for name in ("artifact_id", "bundle_artifact_id"):
+                        aid = getattr(ref, name, None)
+                        if aid:
+                            art = self.get_artifact(aid)
+                            if art is None:
+                                raise ValueError("unknown input artifact")
+                            payload["input_artifacts"][aid] = art["sha256"]
                 if req.scheduler is not None:
                     payload["scheduler"] = req.scheduler.model_dump()
                 if req.submission is not None:
@@ -362,6 +375,64 @@ class Database:
     # Tasks
     # --------------------------------------------------------------------- #
 
+    @contextlib.contextmanager
+    def project_guard(self):
+        """Serialize aggregate snapshots and their derived writes with task mutations."""
+        with self._lock:
+            yield
+
+    @contextlib.contextmanager
+    def task_guard(self, task_id: str, worker_id: str, attempt: int, statuses: set[str]):
+        """Hold the project DB lock across the fence and every associated mutation."""
+        with self._lock:
+            row = self.check_attempt(task_id, worker_id, attempt, statuses)
+            yield row
+
+    def check_attempt(self, task_id: str, worker_id: str, attempt: int, statuses: set[str]):
+        with self._lock:
+            row = self.get_task(task_id)
+            if row is None:
+                raise KeyError(task_id)
+            if row["worker_id"] != worker_id or row["attempt"] != attempt or row["status"] not in statuses:
+                raise PermissionError("stale attempt or invalid task status")
+            if row["status"] in {"leased", "running"} and (row["lease_expires_at"] or 0) < _now():
+                raise PermissionError("task lease expired")
+            return row
+
+    def verify_worker_secret(self, worker_id: str, secret: str | None) -> bool:
+        row = self.get_worker(worker_id)
+        # Arbitrary presented Unicode is hashed safely before constant-time compare.
+        digest = hashlib.sha256((secret or "").encode("utf-8")).hexdigest()
+        return bool(row and row["secret_hash"] and hmac.compare_digest(row["secret_hash"], digest))
+
+    def validate_result_artifacts(self, row, result: dict[str, Any]) -> None:
+        """Transport binding only. A trusted provider attests scientific validity."""
+        links = {
+            r["role"]: r["artifact_id"]
+            for r in self._conn.execute(
+                "SELECT role,artifact_id FROM job_artifacts WHERE job_id=? AND task_id=? AND attempt=?",
+                (row["job_id"], row["id"], row["attempt"]),
+            )
+        }
+        artifacts = result.get("artifacts", {})
+        if set(artifacts) - {"model", "logs", "workspace", "output"}:
+            raise PermissionError("invalid result artifact role")
+        for role, artifact_id in artifacts.items():
+            if artifact_id is not None and links.get(role) != artifact_id:
+                raise PermissionError("result artifact was not uploaded by this task attempt")
+        requested = json.loads(row["payload_json"]).get("outputs", {}).get("export_best_model", True)
+        delivery = result.get("delivery", {})
+        if requested:
+            if not artifacts.get("model") or delivery.get("status") != "exported":
+                raise PermissionError("requested model export is incomplete")
+            art = self.get_artifact(artifacts["model"])
+            if not art or delivery.get("sha256") != art["sha256"] or delivery.get("size_bytes") != art["size_bytes"]:
+                raise PermissionError("model delivery content identity mismatch")
+            if not delivery.get("profile") or not (delivery.get("bundle_format_version") or delivery.get("container_id")):
+                raise PermissionError("missing exporter profile")
+        elif delivery.get("status") != "not_requested" or artifacts.get("model"):
+            raise PermissionError("no-export delivery must be explicit")
+
     def get_task(self, task_id: str) -> sqlite3.Row | None:
         with self._lock:
             return self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -419,8 +490,8 @@ class Database:
                            WHERE in_flight.job_id = t.job_id
                              AND in_flight.status IN (?, ?)
                        ) AS job_in_flight
-                FROM tasks t
-                WHERE t.status = ?
+                FROM tasks t JOIN jobs j ON j.id=t.job_id
+                WHERE t.status = ? AND j.status IN ('queued','running')
                 ORDER BY t.priority DESC, job_in_flight ASC, t.created_at ASC, t.id ASC
                 """,
                 (TaskStatus.LEASED.value, TaskStatus.RUNNING.value, TaskStatus.QUEUED.value),
@@ -439,6 +510,8 @@ class Database:
                     worker_id=worker_id,
                     lease_expires_at=expires,
                     attempt=task["attempt"] + 1,
+                    result_json=None,
+                    error=None,
                 )
                 self._sync_slots(worker_id)
                 # Job goes running on first lease.
@@ -447,30 +520,39 @@ class Database:
                 return _payload_from_row(updated)
             return None
 
-    def start_task(self, task_id: str, worker_id: str) -> sqlite3.Row:
+    def start_task(self, task_id: str, worker_id: str, attempt: int | None = None) -> sqlite3.Row:
         with self._lock:
             row = self.get_task(task_id)
             if row is None:
                 raise KeyError(task_id)
             if row["worker_id"] != worker_id:
                 raise PermissionError("task leased by another worker")
+            if attempt is not None:
+                self.check_attempt(task_id, worker_id, attempt, {"leased"})
             updated = self._set_task_status(self._conn, task_id, TaskStatus.RUNNING, started_at=_now())
             self._conn.commit()
             return updated
 
-    def complete_task(self, task_id: str, worker_id: str, result: dict[str, Any]) -> sqlite3.Row:
+    def complete_task(
+        self, task_id: str, worker_id: str, result: dict[str, Any], attempt: int | None = None
+    ) -> sqlite3.Row:
         with self._lock:
             row = self.get_task(task_id)
             if row is None:
                 raise KeyError(task_id)
             if row["worker_id"] != worker_id:
                 raise PermissionError("task leased by another worker")
+            if attempt is not None:
+                self.check_attempt(task_id, worker_id, attempt, {"running"})
+                self.validate_result_artifacts(row, result)
             updated = self._set_task_status(self._conn, task_id, TaskStatus.SUCCEEDED, result_json=json.dumps(result))
             self._sync_slots(worker_id)
             self._conn.commit()
             return updated
 
-    def fail_task(self, task_id: str, worker_id: str | None, error: str, *, retriable: bool = True) -> sqlite3.Row:
+    def fail_task(
+        self, task_id: str, worker_id: str | None, error: str, *, retriable: bool = True, attempt: int | None = None
+    ) -> sqlite3.Row:
         """Worker-reported failure. Requeue if attempts remain and retriable.
 
         A report from a worker that no longer owns the task (it was reaped and
@@ -488,6 +570,8 @@ class Database:
                 raise KeyError(task_id)
             if worker_id is not None and row["worker_id"] != worker_id:
                 raise PermissionError("stale failure report: task not owned by this worker")
+            if attempt is not None:
+                self.check_attempt(task_id, worker_id or "", attempt, {"leased", "running"})
             failed = self._set_task_status(self._conn, task_id, TaskStatus.FAILED, error=error)
             if retriable and row["attempt"] < row["max_attempts"]:
                 updated = self._set_task_status(
@@ -585,7 +669,27 @@ class Database:
                 self._conn.commit()
         return affected
 
-    def cancel_job_tasks(self, job_id: str) -> list[str]:
+    def request_job_cancel(self, job_id: str) -> list[str] | None:
+        """Commit the task sweep and cancelling/terminal status together."""
+        with self._lock:
+            row = self.get_job(job_id)
+            if row is None:
+                raise KeyError(job_id)
+            current = JobStatus(row["status"])
+            if current in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.CANCELLING}:
+                return None
+            try:
+                running = self.cancel_job_tasks(job_id, commit=False)
+                target = JobStatus.CANCELLING if running else JobStatus.CANCELLED
+                validate_job_transition(current, target)
+                self._conn.execute("UPDATE jobs SET status=?,updated_at=? WHERE id=?", (target.value, _now(), job_id))
+                self._conn.commit()
+                return running
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def cancel_job_tasks(self, job_id: str, *, commit: bool = True) -> list[str]:
         """Cancel queued tasks immediately; running tasks are marked for cooperative stop."""
         cancelled: list[str] = []
         running: list[str] = []
@@ -603,7 +707,8 @@ class Database:
                     cancelled.append(row["id"])
                 elif st == TaskStatus.RUNNING:
                     running.append(row["id"])
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
         return running  # caller asks workers to stop these
 
     def cancel_running_task(self, task_id: str, worker_id: str) -> sqlite3.Row | None:
@@ -651,7 +756,7 @@ class Database:
     # Workers
     # --------------------------------------------------------------------- #
 
-    def register_worker(self, reg: WorkerRegister, *, principal: str | None = None) -> str:
+    def register_worker(self, reg: WorkerRegister, *, principal: str | None = None, secret: str | None = None) -> str:
         now = _now()
         worker_id = _gen_id("worker")
         with self._lock:
@@ -672,10 +777,17 @@ class Database:
                     json.dumps(reg.version),
                 ),
             )
+            if secret is not None:
+                self._conn.execute(
+                    "UPDATE workers SET secret_hash=? WHERE id=?",
+                    (hashlib.sha256(secret.encode()).hexdigest(), worker_id),
+                )
             self._conn.commit()
         return worker_id
 
-    def heartbeat_worker(self, worker_id: str, lease_ttl_s: float | None = None) -> bool:
+    def heartbeat_worker(
+        self, worker_id: str, lease_ttl_s: float | None = None, active_attempts: list[tuple[str, int]] | None = None
+    ) -> bool:
         """Record a heartbeat and renew the worker's active leases.
 
         Leases are renewed on every heartbeat so a task that runs longer than
@@ -689,10 +801,12 @@ class Database:
                 (now, WorkerStatus.ALIVE.value, worker_id),
             )
             if cur.rowcount and lease_ttl_s is not None:
-                self._conn.execute(
-                    "UPDATE tasks SET lease_expires_at = ? WHERE worker_id = ? AND status IN (?, ?)",
-                    (now + lease_ttl_s, worker_id, TaskStatus.LEASED.value, TaskStatus.RUNNING.value),
-                )
+                for task_id, attempt in active_attempts or []:
+                    self._conn.execute(
+                        "UPDATE tasks SET lease_expires_at = ? WHERE worker_id = ? AND id=? AND attempt=? "
+                        "AND status IN (?, ?) AND lease_expires_at >= ?",
+                        (now + lease_ttl_s, worker_id, task_id, attempt, "leased", "running", now),
+                    )
             self._conn.commit()
             return cur.rowcount > 0
 
@@ -763,11 +877,21 @@ class Database:
         with self._lock:
             return self._conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
 
-    def link_job_artifact(self, job_id: str, task_id: str | None, role: str, artifact_id: str) -> None:
+    def get_task_artifact(self, task_id: str, attempt: int, role: str):
+        with self._lock:
+            return self._conn.execute(
+                "SELECT a.* FROM job_artifacts ja JOIN artifacts a ON a.id=ja.artifact_id "
+                "WHERE ja.task_id=? AND ja.attempt=? AND ja.role=?",
+                (task_id, attempt, role),
+            ).fetchone()
+
+    def link_job_artifact(
+        self, job_id: str, task_id: str | None, role: str, artifact_id: str, attempt: int = 0
+    ) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO job_artifacts(job_id, task_id, role, artifact_id) VALUES (?,?,?,?)",
-                (job_id, task_id or "", role, artifact_id),
+                "INSERT OR REPLACE INTO job_artifacts(job_id, task_id, role, artifact_id, attempt) VALUES (?,?,?,?,?)",
+                (job_id, task_id or "", role, artifact_id, attempt),
             )
             self._conn.commit()
 
@@ -780,8 +904,10 @@ class Database:
         with self._lock:
             return list(
                 self._conn.execute(
-                    "SELECT ja.role, ja.task_id, a.* FROM job_artifacts ja "
-                    "JOIN artifacts a ON a.id = ja.artifact_id WHERE ja.job_id = ?",
+                    "SELECT ja.role, ja.task_id, ja.attempt, a.* FROM job_artifacts ja "
+                    "JOIN artifacts a ON a.id = ja.artifact_id LEFT JOIN tasks t ON t.id=ja.task_id "
+                    "WHERE ja.job_id = ? AND (ja.attempt=0 OR ja.attempt=t.attempt) "
+                    "AND (ja.role NOT IN ('model','best_model') OR t.status='succeeded')",
                     (job_id,),
                 ).fetchall()
             )
@@ -818,6 +944,10 @@ class Database:
                     (job_id, after_id, limit),
                 ).fetchall()
             )
+
+    def list_all_events(self, after_id: int = 0, limit: int = 500):
+        with self._lock:
+            return list(self._conn.execute("SELECT * FROM events WHERE id>? ORDER BY id LIMIT ?", (after_id, limit)))
 
     def list_recent_events(self, limit: int = 200) -> list[sqlite3.Row]:
         """The most recent events across all jobs, oldest-first (global stream replay)."""
@@ -864,6 +994,7 @@ def _payload_from_row(row: sqlite3.Row) -> TaskPayload:
             "job_id": row["job_id"],
             "type": payload["type"],
             "attempt": row["attempt"],
+            "input_artifacts": payload.get("input_artifacts", {}),
             "pipeline": PipelineRef.model_validate(payload["pipeline"]),
             "dataset": DatasetRef.model_validate(payload["dataset"]),
             "params": payload.get("params", {}),

@@ -19,15 +19,16 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from nirs4all_access import ProjectPrincipal, issue_credential
 
 from nirs4all_cluster.server.app import ServerConfig, create_app
-from nirs4all_cluster.server.auth import Principal
+from nirs4all_cluster.server.auth import rights_from_roles
+from nirs4all_cluster.server.state import bootstrap_state
 
-# RBAC test credentials by role (mirrors tests/test_rbac.py so the two read consistently).
-SUBMITTER_TOKEN = "s"
-EXECUTOR_TOKEN = "e"
-VIEWER_TOKEN = "v"
-ADMIN_TOKEN = "a"
+_ROLE_NAMES = {"submitter":"alice","executor":"worker1","viewer":"dash","admin":"ops"}
+_CREDENTIALS = {role:issue_credential(ProjectPrincipal("test",name,frozenset({"cluster"}),frozenset(rights_from_roles([role]))))
+                for role,name in _ROLE_NAMES.items()}
+SUBMITTER_TOKEN, EXECUTOR_TOKEN, VIEWER_TOKEN, ADMIN_TOKEN = [_CREDENTIALS[r][0] for r in _ROLE_NAMES]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -76,15 +77,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = keep
 
 
-def _principals() -> list[Principal]:
-    return [
-        Principal.from_roles("alice", SUBMITTER_TOKEN, ["submitter"]),
-        Principal.from_roles("worker1", EXECUTOR_TOKEN, ["executor"]),
-        Principal.from_roles("dash", VIEWER_TOKEN, ["viewer"]),
-        Principal.from_roles("ops", ADMIN_TOKEN, ["admin"]),
-    ]
-
-
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -131,6 +123,7 @@ class LiveCluster:
 @pytest.fixture(scope="module")
 def cluster(tmp_path_factory: pytest.TempPathFactory) -> Iterator[LiveCluster]:
     state = tmp_path_factory.mktemp("cluster-state")
-    config = ServerConfig(state_dir=str(state), principals=_principals(), lease_ttl_s=60.0)
+    bootstrap_state(state,tuple(r for _,r in _CREDENTIALS.values()))
+    config = ServerConfig(state_dir=str(state), lease_ttl_s=60.0)
     with running_server(config) as base_url:
         yield LiveCluster(base_url)

@@ -32,6 +32,7 @@ import json
 import math
 import re
 import shutil
+import sys
 import time
 import traceback
 import zipfile
@@ -713,7 +714,103 @@ def _robustness_handoff_trace(
     }
 
 
+class ModelExportError(RuntimeError):
+    """Requested owner export is unsupported, incomplete or invalid; do not retry."""
+
+
+def _verify_owner_model(path: Path, owner_version: str) -> dict[str, Any]:
+    # Delegate archive interpretation/version/source-capture integrity to the owner.
+    import hashlib
+
+    from nirs4all.pipeline.bundle.loader import load_bundle
+
+    loader = load_bundle(path)
+    metadata = loader.metadata
+    if metadata is None or not metadata.pipeline_uid or not metadata.nirs4all_version:
+        raise ModelExportError("owner archive metadata is incomplete")
+    if str(metadata.bundle_format_version) != "1.0":
+        raise ModelExportError("unsupported owner export profile: " + str(metadata.bundle_format_version))
+    if metadata.nirs4all_version != owner_version:
+        raise ModelExportError("owner archive runtime version identity mismatch")
+    if metadata.model_step_index is None or loader.artifact_provider is None:
+        raise ModelExportError("owner archive has no model artifact provider")
+    if not loader.artifact_provider.get_artifacts_for_step(metadata.model_step_index):
+        raise ModelExportError("owner archive has no loadable model artifacts")
+    return {
+        "status": "exported",
+        "profile": "nirs4all-python-n4a-1.0",
+        "bundle_format_version": str(metadata.bundle_format_version),
+        "owner_version": owner_version,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "size_bytes": path.stat().st_size,
+        "canonical_core": False,
+    }
+
+
+def _verify_canonical_model(path: Path, run_result: Any, owner_version: str) -> dict[str, Any]:
+    """Bind the exported bytes to the single Core fit's sealed container and owner view.
+
+    Nothing is trained or re-inspected here: the exported file must equal the
+    bytes Core sealed, and identities come from the owner manifest artifacts.
+    """
+    import hashlib
+
+    reference = run_result.native_archive_reference
+    data = path.read_bytes()
+    sha256 = hashlib.sha256(data).hexdigest()
+    view = run_result.canonical_view
+    receipt = view["receipt"]
+    if sha256 != reference["archive_sha256"] or sha256 != receipt["container_sha256"] or len(data) != receipt["byte_length"]:
+        raise ModelExportError("exported canonical container differs from the bytes Core sealed")
+    manifest = view["manifest"]
+    identities: dict[str, str] = {}
+    for kind in ("model", "run", "result", "score"):
+        artifacts = [a for a in manifest["artifacts"] if a.get("kind") == kind]
+        if len(artifacts) != 1:
+            raise ModelExportError(f"canonical container must declare exactly one {kind} artifact")
+        identities[kind] = artifacts[0]["identity"]["fingerprint"]
+    return {
+        "status": "exported",
+        "profile": manifest["schema"],
+        "physical_profile": manifest["physical_profile"],
+        "container_id": manifest["container_id"],
+        "owner_identities": identities,
+        "owner_version": owner_version,
+        "sha256": sha256,
+        "size_bytes": len(data),
+        "canonical_core": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw == ["--environment-version"]:
+        import importlib.metadata as md
+        import platform
+
+        import nirs4all
+
+        from ..versioning import RUNTIME_PACKAGES
+
+        packages = {}
+        for name in RUNTIME_PACKAGES:
+            try:
+                packages[name] = md.version(name)
+            except md.PackageNotFoundError:
+                pass
+        packages["nirs4all"] = nirs4all.__version__
+        print(
+            json.dumps(
+                {
+                    "nirs4all": nirs4all.__version__,
+                    "packages": packages,
+                    "python": platform.python_version(),
+                    "platform": platform.platform(),
+                    "executable": sys.executable,
+                }
+            )
+        )
+        return 0
     parser = argparse.ArgumentParser(description="nirs4all-cluster task runner")
     parser.add_argument("--task-file", required=True)
     parser.add_argument("--workspace", required=True)
@@ -727,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    run_result = None
     try:
         spec = json.loads(Path(args.task_file).read_text(encoding="utf-8"))
         robustness_handoff = _robustness_handoff_from_spec(spec)
@@ -736,7 +834,30 @@ def main(argv: list[str] | None = None) -> int:
         dataset = _load_dataset(spec["dataset"])
 
         params = dict(spec.get("params") or {})
+        canonical = False
+        if params.get("native_profile") is not None:
+            from nirs4all.api.native_n4a import CANONICAL_N4A_NATIVE_PROFILE
+
+            canonical = params["native_profile"] == CANONICAL_N4A_NATIVE_PROFILE
+        outputs = spec.get("outputs") or {}
+        handoff_requested = robustness_handoff is not None and robustness_handoff.get("requested", True)
+        if canonical and (outputs.get("keep_task_workspace") or handoff_requested):
+            # The canonical Core profile writes no workspace, so the runner's default
+            # isolated-task-workspace semantics cannot be honored: refuse, never drop.
+            raise ModelExportError(
+                "the canonical .n4a profile writes no task workspace; keep_task_workspace and robustness handoff are unsupported"
+            )
+        if canonical and params.get("workspace_path") is not None:
+            # An explicit workspace cannot be honored by the canonical profile (no WorkspaceStore is
+            # written), so refuse before any Core fit instead of discarding it below.
+            raise ModelExportError(
+                "the canonical .n4a profile cannot honor an explicit workspace_path; it writes no workspace"
+            )
         inner_n_jobs = params.pop("inner_n_jobs", 1)
+        if canonical and (params.get("n_jobs") is not None or inner_n_jobs != 1):
+            # Core's single native fit has no parallelism control; an explicit request is refused
+            # before any fit rather than dropped (or forwarded to a retriable SDK refusal).
+            raise ModelExportError("the canonical .n4a profile does not support n_jobs or inner_n_jobs; it has no parallelism control")
         params.setdefault("verbose", 0)
         params.setdefault("save_charts", False)
         # Worker writes nirs4all artifacts into its own task workspace.
@@ -751,25 +872,27 @@ def main(argv: list[str] | None = None) -> int:
             params["n_jobs"] = inner_n_jobs
 
         start = time.time()
+        # The canonical profile refuses workspace_path (it persists nothing there).
+        workspace_kwargs = {} if canonical else {"workspace_path": str(Path(args.workspace))}
         run_result = nirs4all.run(
             pipeline=pipeline,
             dataset=dataset,
-            workspace_path=str(Path(args.workspace)),
+            **workspace_kwargs,
             **params,
         )
         duration = time.time() - start
 
         summary = _summarize(run_result, getattr(nirs4all, "__version__", "unknown"), duration)
         produced: dict[str, Any] = {"model": None}
-        outputs = spec.get("outputs") or {}
         if outputs.get("export_best_model", True):
             try:
                 model_path = output_dir / "best_model.n4a"
                 run_result.export(str(model_path))
-                if model_path.exists():
-                    produced["model"] = str(model_path)
-            except Exception as exc:  # export is best-effort; record but don't fail the task
-                summary["extra"]["export_error"] = f"{type(exc).__name__}: {exc}"
+                if not model_path.is_file():
+                    raise ModelExportError("owner exporter produced no model archive")
+                produced["model"] = str(model_path)
+            except Exception as exc:
+                raise ModelExportError(f"requested owner export failed: {type(exc).__name__}: {exc}") from exc
         summary["produced"] = produced
         if robustness_handoff is not None and robustness_handoff.get("requested", True):
             publication_summary = _publish_robustness_evidence_to_workspace(
@@ -784,11 +907,20 @@ def main(argv: list[str] | None = None) -> int:
                 publication_summary,
             )
 
-        if hasattr(run_result, "close"):
+        if produced["model"]:
             try:
-                run_result.close()
-            except Exception:
-                pass
+                if canonical:
+                    from nirs4all.api.native_n4a import CanonicalN4aRunResult
+
+                    if not isinstance(run_result, CanonicalN4aRunResult):
+                        raise ModelExportError("the canonical profile returned a non-canonical result")
+                    summary["delivery"] = _verify_canonical_model(Path(produced["model"]), run_result, nirs4all.__version__)
+                else:
+                    summary["delivery"] = _verify_owner_model(Path(produced["model"]), nirs4all.__version__)
+            except Exception as exc:
+                raise ModelExportError(f"owner archive validation failed: {type(exc).__name__}: {exc}") from exc
+        else:
+            summary["delivery"] = {"status": "not_requested", "canonical_core": False}
 
         result_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return 0
@@ -797,9 +929,17 @@ def main(argv: list[str] | None = None) -> int:
             "status": "failed",
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
+            "retriable": not isinstance(exc, ModelExportError),
+            "delivery": {"status": "incomplete"},
         }
         result_path.write_text(json.dumps(failure, indent=2), encoding="utf-8")
         return 1
+    finally:
+        if run_result is not None and hasattr(run_result, "close"):
+            try:
+                run_result.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

@@ -9,8 +9,8 @@
 
 > **Status: beta · trusted-LAN.** A small distributed job queue for `nirs4all.run()`,
 > built for a **trusted local network** — not the open internet or untrusted multi-tenant
-> use. The documented non-goals and security posture still hold (a single static token, no
-> sandbox, a single SQLite server). See [`SECURITY.md`](SECURITY.md),
+> use. API v2 uses private project tokens and isolated project stores. Consumers
+> grant execution on trusted providers; there is no science sandbox. See [`SECURITY.md`](SECURITY.md),
 > [`PROTOTYPE_DESIGN.md`](PROTOTYPE_DESIGN.md) (the design source of truth) and
 > [`PROTOTYPE_TO_PRODUCTION.md`](PROTOTYPE_TO_PRODUCTION.md). The broader question of a
 > native cluster vs. an opt-in Dask backend in `nirs4all` remains open.
@@ -24,7 +24,7 @@ runner subprocess, and the server/client works without it.
 
 ## What it does
 
-- Submission of a`nirs4all.run()`job via Python SDK or CLI. - FastAPI server + SQLite file + local object store addressed by SHA-256. - Workers polling (long-polling HTTP + heartbeat), with a task sandbox per folder. - Atomic job (Level 0) and`pipelines × datasets`decomposition (Level 1) with aggregation/ranking. - Download artifacts: JSON summary, logs, best`.n4a`model. - Recovery after worker crash (lease + retry), cooperative cancellation, idempotence. - Routing by capabilities: labels, memory, **package versions (PEP 440)**, **GPU/CUDA** (auto-detected,`requirements.min_gpu_count`or`cuda=true`label). A`nirs4all.run`job requires`nirs4all`by default. - **Live web dashboard** at `/ui` (jobs, workers, events; cancel) over a global WebSocket stream. - **Version compatibility tracking**: client/server/worker advertise their `nirs4all-cluster` + protocol version; incompatible protocol majors are rejected, compatible drift is logged/traced. **Pipeline content fingerprints** recorded end-to-end. - **Richer job listing/filtering** (`n4cluster jobs --status … --name …`, `GET /v1/stats`) and **structured logging** (`--log-level`, `--log-file`).
+- Submission of a`nirs4all.run()`job via Python SDK or CLI. - FastAPI server + SQLite file + local object store addressed by SHA-256. - Workers polling (long-polling HTTP + heartbeat), with a task sandbox per folder. - Atomic job (Level 0) and`pipelines × datasets`decomposition (Level 1) with aggregation/ranking. - Download artifacts: JSON summary, logs, best`.n4a`model. - Recovery after worker crash (lease + retry), cooperative cancellation, idempotence. - Routing by capabilities: labels, memory, **package versions (PEP 440)**, **GPU/CUDA** (auto-detected,`requirements.min_gpu_count`or`cuda=true`label). A`nirs4all.run`job requires`nirs4all`by default. - **Dashboard shell (live feed deferred for API v2)** at `/ui` (jobs, workers, events; cancel) over a global WebSocket stream. - **Version compatibility tracking**: client/server/worker advertise their `nirs4all-cluster` + protocol version; incompatible protocol majors are rejected, compatible drift is logged/traced. **Pipeline content fingerprints** recorded end-to-end. - **Richer job listing/filtering** (`n4cluster jobs --status … --name …`, `GET /v1/stats`) and **structured logging** (`--log-level`, `--log-file`).
 
 ## Installation
 
@@ -37,44 +37,20 @@ uv pip install -e .            # serveur + client + transport worker
 Python ≥ 3.11. The server and client only need FastAPI/uvicorn/httpx/pydantic; only the
 worker needs a provisioned`nirs4all`environment.
 
-## Quickstart (LAN de confiance)
+## Local project services
 
-```bash
-# 1) serveur
-n4cluster server --host 0.0.0.0 --port 8765 --state ./cluster-state
+See [quickstart](docs/quickstart.md), [CLI](docs/cli-reference.md) and
+[security boundary](docs/security-and-scope.md). API v2 fails closed. Explicitly
+initialize a new empty state directory, provision separate project-scoped consumer
+and provider tokens, and restart the server after credential changes. Credentials
+are persisted hash-only through the independent stdlib `nirs4all-access` package.
+No server secret in argv, environment or URLs. Clients use a private token file or
+NIRS4ALL_PROJECT_TOKEN. Unmarked old state is refused without opening SQLite.
 
-# 2) one or more workers (on machines that can see nirs4all and the dataset)
-#    The worker auto-detects GPUs (nvidia-smi) and declares the cuda + gpu_count labels;
-#    force with --gpus N (0 to hide GPUs).
-n4cluster worker --server http://HOST:8765 --labels site=lab --slots 1
-
-# 3) submit a job and wait for the result
-n4cluster submit examples/job.shared-path.yaml --wait --out ./results
-n4cluster status   <job_id>
-n4cluster jobs     --status running        # filter the job list
-n4cluster logs     <job_id>
-n4cluster cancel   <job_id>
-n4cluster artifacts <job_id> --out ./results
-
-# 4) watch everything live in the browser
-#    open http://HOST:8765/ui
-```
-
-SDK Python :
-
-```python
-from nirs4all_cluster import ClusterClient
-
-client = ClusterClient("http://host:8765", token=None)
-job = client.submit_run(
-    pipeline="/shared/pipelines/pls.yaml",                 # kind=path
-    dataset="/shared/datasets/corn",                       # kind=shared_path
-    params={"random_state": 42, "refit": True},
-)
-job = client.wait(job.id)
-print(job.aggregate.best_metric, job.aggregate.ranking)
-client.download_best_model(job.id, "best_model.n4a")
-```
+Workers need allowed shared input roots and one OS identity per project provider.
+Requested export uses real owner APIs; missing/unsupported exports fail explicitly.
+The supported profile is `nirs4all-python-n4a-1.0`; canonical Core T3/T4 is pending.
+The unchanged dashboard live feed awaits a joint frontend migration.
 
 ## Architecture
 

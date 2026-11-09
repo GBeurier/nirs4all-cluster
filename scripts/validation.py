@@ -26,12 +26,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
+SERVER_PY = str(ROOT / ".venv" / "bin" / "python")
 DATA = Path("/home/delete/nirs4all/nirs4all-data/regression")
 GRAPEVINE = DATA / "GRAPEVINE_LeafTraits" / "PSI_spxyG70_30_byCultivar_MicroNIR_NeoSpectra"
 PIPELINE = ROOT / "examples" / "pipelines" / "pls.yaml"
 
 sys.path.insert(0, str(ROOT))
+from nirs4all_access import ProjectPrincipal, issue_credential  # noqa: E402
+
 from nirs4all_cluster.client import ClusterClient  # noqa: E402
+from nirs4all_cluster.server.auth import rights_from_roles  # noqa: E402
+from nirs4all_cluster.server.state import bootstrap_state  # noqa: E402
+
+CLIENT_TOKEN, CLIENT_RECORD = issue_credential(
+    ProjectPrincipal("validation", "consumer", frozenset({"cluster"}), frozenset(rights_from_roles(["submitter"])))
+)
+WORKER_TOKEN, WORKER_RECORD = issue_credential(
+    ProjectPrincipal("validation", "provider", frozenset({"cluster"}), frozenset(rights_from_roles(["executor"])))
+)
+
 
 RESULTS: dict = {"tests": {}, "measurements": {}}
 
@@ -48,10 +61,25 @@ def _n4(*args: str) -> list[str]:
 
 @contextlib.contextmanager
 def server(state: Path, port: int, lease_ttl: float = 6.0):
+    bootstrap_state(state, (CLIENT_RECORD, WORKER_RECORD))
     proc = subprocess.Popen(
-        _n4("server", "--host", "127.0.0.1", "--port", str(port), "--state", str(state),
-            "--lease-ttl", str(lease_ttl), "--log-level", "warning"),
-        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        [
+            SERVER_PY,
+            "-m",
+            "nirs4all_cluster.cli",
+            "server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--state",
+            str(state),
+            "--lease-ttl",
+            str(lease_ttl),
+            "--log-level",
+            "warning",
+        ],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), os.environ.get("PYTHONPATH", "")])},
     )
     base = f"http://127.0.0.1:{port}"
     try:
@@ -79,8 +107,26 @@ def _await_health(base: str, timeout: float = 30.0) -> None:
 
 def start_worker(base: str, state: Path, name: str, heartbeat_env: float = 1.0) -> subprocess.Popen:
     return subprocess.Popen(
-        _n4("worker", "--server", base, "--state", str(state), "--name", name, "--poll-interval", "0.5"),
-        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        _n4(
+            "worker",
+            "--server",
+            base,
+            "--state",
+            str(state),
+            "--name",
+            name,
+            "--poll-interval",
+            "0.5",
+            "--allow-path-root",
+            str(DATA),
+            "--allow-path-root",
+            str(ROOT / "examples"),
+        ),
+        env={
+            **os.environ,
+            "NIRS4ALL_PROJECT_TOKEN": WORKER_TOKEN,
+            "PYTHONPATH": os.pathsep.join([str(ROOT), os.environ.get("PYTHONPATH", "")]),
+        },
     )
 
 
@@ -104,10 +150,11 @@ def _wait_task_running(client: ClusterClient, job_id: str, timeout: float = 30.0
 def scenario_atomic_and_parity(base: str, tmp: Path) -> None:
     import nirs4all
 
-    client = ClusterClient(base)
+    client = ClusterClient(base, token=CLIENT_TOKEN)
     t0 = time.time()
-    job = client.submit_run(pipeline=str(PIPELINE), dataset=str(GRAPEVINE),
-                            params={"random_state": 42, "refit": True}, name="atomic")
+    job = client.submit_run(
+        pipeline=str(PIPELINE), dataset=str(GRAPEVINE), params={"random_state": 42, "refit": True}, name="atomic"
+    )
     submit_t = time.time()
     job = client.wait(job.id, timeout=180, poll=0.5)
     total = time.time() - t0
@@ -120,9 +167,15 @@ def scenario_atomic_and_parity(base: str, tmp: Path) -> None:
     RESULTS["tests"]["1b_n4a_valid_bundle"] = n4a_ok
 
     # parity vs local
-    local = nirs4all.run(pipeline=str(PIPELINE), dataset=str(GRAPEVINE),
-                         workspace_path=str(tmp / "local_ws"), random_state=42, refit=True,
-                         save_charts=False, verbose=0)
+    local = nirs4all.run(
+        pipeline=str(PIPELINE),
+        dataset=str(GRAPEVINE),
+        workspace_path=str(tmp / "local_ws"),
+        random_state=42,
+        refit=True,
+        save_charts=False,
+        verbose=0,
+    )
     diff = abs(job.aggregate.best_metric - local.best_rmse)
     RESULTS["tests"]["6_metric_parity_vs_local"] = diff < 1e-6
     RESULTS["measurements"]["metric_diff_vs_local"] = diff
@@ -139,7 +192,7 @@ def scenario_atomic_and_parity(base: str, tmp: Path) -> None:
 
 
 def scenario_two_workers_parallel(base: str, tmp: Path) -> None:
-    client = ClusterClient(base)
+    client = ClusterClient(base, token=CLIENT_TOKEN)
     j1 = client.submit_run(pipeline=str(PIPELINE), dataset=str(GRAPEVINE), params={"random_state": 1}, name="p1")
     j2 = client.submit_run(pipeline=str(PIPELINE), dataset=str(GRAPEVINE), params={"random_state": 2}, name="p2")
     j1 = client.wait(j1.id, timeout=180, poll=0.5)
@@ -152,7 +205,7 @@ def scenario_two_workers_parallel(base: str, tmp: Path) -> None:
 
 def scenario_kill_retry(base: str, tmp: Path) -> None:
     """Worker killed mid-task -> lease expires -> second worker retries -> success."""
-    client = ClusterClient(base)
+    client = ClusterClient(base, token=CLIENT_TOKEN)
     # A slower pipeline so we can catch the task mid-run.
     slow = tmp / "slow.yaml"
     slow.write_text(
@@ -191,7 +244,7 @@ def scenario_kill_retry(base: str, tmp: Path) -> None:
 
 
 def scenario_cancel_not_relaunched(base: str, tmp: Path) -> None:
-    client = ClusterClient(base)
+    client = ClusterClient(base, token=CLIENT_TOKEN)
     slow = tmp / "slow.yaml"  # reuse from kill scenario
     worker = start_worker(base, tmp / "cancel_worker", "canceller")
     job = client.submit_run(pipeline=str(slow), dataset=str(GRAPEVINE), params={"random_state": 7}, name="cancel")
@@ -210,7 +263,7 @@ def scenario_cancel_not_relaunched(base: str, tmp: Path) -> None:
 
 
 def scenario_matrix(base: str, tmp: Path) -> None:
-    client = ClusterClient(base)
+    client = ClusterClient(base, token=CLIENT_TOKEN)
     corn = DATA / "CORN"
     datasets = [
         {"kind": "shared_path", "name": "moisture", "path": str(corn / "Corn_Moisture_80_WangStyle_m5spec")},
@@ -219,8 +272,12 @@ def scenario_matrix(base: str, tmp: Path) -> None:
     ]
     job = client.submit_run(pipeline=str(PIPELINE), datasets=datasets, params={"random_state": 42}, name="matrix")
     job = client.wait(job.id, timeout=240, poll=1.0)
-    ok = (job.status.value == "succeeded" and job.aggregate.num_tasks == 3
-          and job.aggregate.num_succeeded == 3 and len(job.aggregate.ranking) == 3)
+    ok = (
+        job.status.value == "succeeded"
+        and job.aggregate.num_tasks == 3
+        and job.aggregate.num_succeeded == 3
+        and len(job.aggregate.ranking) == 3
+    )
     RESULTS["tests"]["5_matrix_aggregation"] = ok
     RESULTS["measurements"]["matrix_ranking"] = [
         {"dataset": r["dataset"], "best_rmse": r.get("best_rmse")} for r in job.aggregate.ranking
