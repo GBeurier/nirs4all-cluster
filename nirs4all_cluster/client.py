@@ -23,6 +23,7 @@ import httpx
 
 from .client_errors import ClusterConnectionError, raise_for_response
 from .client_transport import make_http_client, request
+from .content_identity import receive_verified_download
 from .schemas import (
     ClusterStats,
     DatasetRef,
@@ -417,18 +418,14 @@ class ClusterClient:
 
     def download_artifact(self, artifact_id: str, dest: str | Path) -> Path:
         dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
         url = f"/v1/artifacts/{artifact_id}"
         try:
             with self._http.stream("GET", url) as resp:
                 if resp.status_code >= 400:
                     raise_for_response(resp)  # reads + maps to the typed error (e.g. 404/403)
-                with open(dest, "wb") as fh:
-                    for chunk in resp.iter_bytes():
-                        fh.write(chunk)
+                return receive_verified_download(resp, dest)
         except httpx.TransportError as exc:
             raise ClusterConnectionError(str(exc), method="GET", url=url) from exc
-        return dest
 
     def download_best_model(self, job_id: str, dest: str | Path) -> Path | None:
         # Use the aggregate's resolved id (single source of truth) rather than

@@ -191,7 +191,7 @@ def _native_payload():
 def test_build_runner_spec_fingerprints_inline(tmp_path):
     inline = {"steps": [{"class": "PLS", "n": 5}]}
     task = _payload({"kind": "inline_json", "inline": inline}, tmp_path)
-    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest)
+    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest, allowed_roots=(tmp_path,))
     # The worker's inline fingerprint matches the client's hash of the same dict.
     assert spec["pipeline_fingerprint"] == fingerprint_obj(inline)
 
@@ -200,7 +200,7 @@ def test_build_runner_spec_fingerprints_path(tmp_path):
     pipeline_file = tmp_path / "p.yaml"
     pipeline_file.write_text("steps: [a, b]\n", encoding="utf-8")
     task = _payload({"kind": "path", "path": str(pipeline_file)}, tmp_path)
-    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest)
+    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest, allowed_roots=(tmp_path,))
     assert spec["pipeline_fingerprint"] == fingerprint_file(pipeline_file)
 
 
@@ -220,7 +220,7 @@ def test_build_runner_spec_carries_native_payload_to_subprocess(tmp_path):
         }
     )
 
-    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest)
+    spec = build_runner_spec(task, tmp_path / "wd", lambda artifact_id, dest: dest, allowed_roots=(tmp_path,))
 
     handoff = spec["native_payload"]["manifest"]["robustnessEvidencePublicationHandoff"]
     assert handoff["kind"] == "robustness_evidence_publication_handoff"
@@ -327,7 +327,7 @@ def test_runner_records_robustness_handoff_trace_without_synthesizing_arrays(tmp
                 "pipeline": {"mode": "path", "path": "/shared/pls.yaml"},
                 "dataset": {"mode": "path", "path": "/data/corn"},
                 "params": {},
-                "outputs": {"export_best_model": True},
+                "outputs": {"export_best_model": False},
                 "native_payload": _native_payload(),
             }
         ),

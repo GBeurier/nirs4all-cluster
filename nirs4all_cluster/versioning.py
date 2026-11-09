@@ -23,9 +23,11 @@ from . import __version__
 
 # Protocol major. Bump only on a breaking wire-contract change; it is deliberately
 # independent of the package version (a patch/minor package bump keeps the wire).
-API_VERSION = 1
+API_VERSION = 2
 
 CLUSTER_VERSION = __version__
+
+RUNTIME_PACKAGES = ("nirs4all", "numpy", "scipy", "scikit-learn", "pandas", "polars", "torch", "tensorflow", "jax")
 
 # Headers carried on every /v1 request and response so each side can record the
 # other's identity and warn on drift.

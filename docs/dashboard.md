@@ -18,7 +18,10 @@ It shows:
 
 If the server has a token, paste it into the dashboard's token field (stored in the
 browser's `localStorage`); it is sent as `Authorization: Bearer …` on requests and as
-`?token=` on the WebSocket. With no token (dev mode) the dashboard works as-is.
+an Authorization Bearer header for API v2. The static dashboard still sends
+query WebSocket credentials; its live feed is unavailable until a joint frontend
+migration. Query credentials are rejected and redacted before uvicorn logs them.
+There is no open/dev server mode.
 
 ```{note}
 This is a deliberately minimal **operations** view for the queue itself (in the spirit of

@@ -23,10 +23,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi.testclient import TestClient
+from auth_support import TestClient, create_app
 
 from nirs4all_cluster.schemas import JobRequest
-from nirs4all_cluster.server.app import ServerConfig, create_app
+from nirs4all_cluster.server.app import ServerConfig
 
 
 def _client(tmp_path) -> TestClient:

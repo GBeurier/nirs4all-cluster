@@ -30,6 +30,7 @@ classifiers = [
 # worker's pre-provisioned environment (see PROTOTYPE_DESIGN.md non-goals); it is
 # imported lazily and guarded, exactly like nirs4all-studio guards its import.
 dependencies = [
+    "nirs4all-access>=0.1,<0.2",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "httpx>=0.27",
@@ -112,3 +113,6 @@ testpaths = ["tests"]
 markers = [
     "release_smoke: opt-in installed wheel smoke for release packaging and entrypoints",
 ]
+
+[tool.uv.sources]
+nirs4all-access = { path = "packages/nirs4all-access" }

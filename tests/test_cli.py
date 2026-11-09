@@ -53,7 +53,7 @@ def test_run_command_rejects_bad_param_before_connecting(capsys):
     assert "invalid input" in capsys.readouterr().err
 
 
-def test_cli_forbidden_message_exposes_missing_right(cluster, tmp_path, capsys):
+def test_cli_forbidden_message_exposes_missing_right(cluster, tmp_path, capsys, monkeypatch):
     job_file = tmp_path / "job.json"
     job_file.write_text(
         json.dumps(
@@ -66,9 +66,49 @@ def test_cli_forbidden_message_exposes_missing_right(cluster, tmp_path, capsys):
         encoding="utf-8",
     )
 
-    rc = main(["submit", str(job_file), "--server", cluster.base_url, "--token", cluster.viewer])
+    monkeypatch.setenv("NIRS4ALL_PROJECT_TOKEN", cluster.viewer)
+    rc = main(["submit", str(job_file), "--server", cluster.base_url])
 
     assert rc == 3
     err = capsys.readouterr().err
     assert "forbidden (as dash)" in err
-    assert "right(s): submit" in err
+    assert "right(s): cluster.submit" in err
+
+
+def test_provision_hash_only_restart_contract(tmp_path, capsys):
+    from nirs4all_access import ProjectTokenVerifier, load_credential_store
+
+    state = tmp_path / "state"
+    assert main(["init-state", "--state", str(state)]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "token-create",
+                "--state",
+                str(state),
+                "--project",
+                "lab",
+                "--principal",
+                "consumer",
+                "--role",
+                "submitter",
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    secret = captured.out.strip()
+    assert "restart" in captured.err
+    path = state / "auth/credentials.json"
+    assert secret not in path.read_text()
+    assert path.stat().st_mode & 0o777 == 0o600
+    records = load_credential_store(path)
+    principal = ProjectTokenVerifier(records).verify(secret, service="cluster", required_rights=["cluster.submit"])
+    assert principal.project_id == "lab" and principal.principal_id == "consumer"
+    assert "cluster.execute" not in principal.rights
+    before = path.read_bytes()
+    assert (
+        main(["token-create", "--state", str(state), "--project", "../bad", "--principal", "c", "--role", "admin"]) == 2
+    )
+    assert path.read_bytes() == before

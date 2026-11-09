@@ -21,9 +21,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from nirs4all_access import ProjectPrincipal, issue_credential
+
+from nirs4all_cluster.server.auth import ALL_RIGHTS
+from nirs4all_cluster.server.state import bootstrap_state
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN = "r"
+TOKEN, RECORD = issue_credential(ProjectPrincipal("release", "ops", frozenset({"cluster"}), frozenset(ALL_RIGHTS)))
 STARTUP_TIMEOUT_SECONDS = 60
 
 pytestmark = pytest.mark.release_smoke
@@ -34,6 +38,7 @@ def _clean_env() -> dict[str, str]:
     env.pop("PYTHONPATH", None)
     env.pop("N4CLUSTER_SERVER", None)
     env.pop("N4CLUSTER_TOKEN", None)
+    env.pop("NIRS4ALL_PROJECT_TOKEN", None)
     env.pop("VIRTUAL_ENV", None)
     env["PYTHONNOUSERSITE"] = "1"
     return env
@@ -184,6 +189,10 @@ def test_release_wheel_runs_installed_cli_server_and_worker_without_nirs4all(tmp
 
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
+    bootstrap_state(tmp_path / "server-state", (RECORD,))
+    token_file = tmp_path / "project.token"
+    token_file.write_text(TOKEN)
+    token_file.chmod(0o600)
     server = _start_installed_cli(
         uv,
         wheel,
@@ -195,8 +204,6 @@ def test_release_wheel_runs_installed_cli_server_and_worker_without_nirs4all(tmp
         str(port),
         "--state",
         str(tmp_path / "server-state"),
-        "--token",
-        TOKEN,
         "--log-level",
         "warning",
     )
@@ -215,8 +222,8 @@ def test_release_wheel_runs_installed_cli_server_and_worker_without_nirs4all(tmp
             "worker",
             "--server",
             base_url,
-            "--token",
-            TOKEN,
+            "--token-file",
+            str(token_file),
             "--state",
             str(tmp_path / "worker-state"),
             "--name",
@@ -230,7 +237,9 @@ def test_release_wheel_runs_installed_cli_server_and_worker_without_nirs4all(tmp
         )
         _await_worker(base_url, "release-smoke-worker", worker)
 
-        workers = _run_installed_cli(uv, wheel, run_cwd, "workers", "--server", base_url, "--token", TOKEN)
+        workers = _run_installed_cli(
+            uv, wheel, run_cwd, "workers", "--server", base_url, "--token-file", str(token_file)
+        )
         assert workers.returncode == 0, workers.stderr or workers.stdout
         assert "release-smoke-worker" in workers.stdout
 
@@ -247,13 +256,13 @@ def test_release_wheel_runs_installed_cli_server_and_worker_without_nirs4all(tmp
             "release-smoke",
             "--server",
             base_url,
-            "--token",
-            TOKEN,
+            "--token-file",
+            str(token_file),
         )
         assert submitted.returncode == 0, submitted.stderr or submitted.stdout
         assert "submitted nirs4all.run job" in submitted.stdout
 
-        jobs = _run_installed_cli(uv, wheel, run_cwd, "jobs", "--server", base_url, "--token", TOKEN)
+        jobs = _run_installed_cli(uv, wheel, run_cwd, "jobs", "--server", base_url, "--token-file", str(token_file))
         assert jobs.returncode == 0, jobs.stderr or jobs.stdout
         assert "queued" in jobs.stdout
         assert "release-smoke" in jobs.stdout

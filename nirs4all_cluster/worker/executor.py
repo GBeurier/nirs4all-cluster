@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -29,6 +30,24 @@ class ExecutionResult:
     log_path: Path
     workspace_path: Path
     output_dir: Path
+
+
+def runner_environment() -> dict[str, str]:
+    """Remove control-plane credentials, retaining scientific/provisioned Python env."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k.upper()
+        not in {
+            "NIRS4ALL_PROJECT_TOKEN",
+            "N4CLUSTER_TOKEN",
+            "N4CLUSTER_WORKER_SECRET",
+            "N4CLUSTER_TOKEN_FILE",
+            "NIRS4ALL_PROJECT_TOKEN_FILE",
+            "N4CLUSTER_AUTH_FILE",
+        }
+        and not (k.upper().startswith("N4CLUSTER_") and any(x in k.upper() for x in ("TOKEN", "SECRET", "CREDENTIAL")))
+    }
 
 
 def execute_task(
@@ -75,7 +94,7 @@ def execute_task(
         # an `import nirs4all` resolving to a namespace-package shadow if the
         # worker happened to be launched from a directory that contains a
         # `nirs4all/` source tree.
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(workdir))
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(workdir), env=runner_environment())
         logger.info("runner started (pid=%s) in %s", proc.pid, workdir)
         while True:
             ret = proc.poll()
