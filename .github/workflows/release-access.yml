@@ -1,0 +1,93 @@
+name: Release Access
+
+on:
+  push:
+    tags: ["access-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check Access distributions
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/nirs4all-access
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Validate stable version and release tag
+        run: |
+          "$(uv python find 3.11)" -I - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+              raise SystemExit("Access release requires a stable X.Y.Z version")
+          if os.environ["GITHUB_EVENT_NAME"] == "push":
+              if os.environ["GITHUB_REF"] != f"refs/tags/access-v{version}":
+                  raise SystemExit("Access tag must exactly match the project version")
+          with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+              output.write(f"ACCESS_VERSION={version}\n")
+          PYTHON
+      - name: Build Access sdist and wheel once
+        run: uv build --out-dir "$RUNNER_TEMP/access-dist"
+      - name: Check strict metadata
+        run: uvx twine check --strict "$RUNNER_TEMP/access-dist/"*
+      - name: Check each installed artifact in isolation
+        run: |
+          shopt -s nullglob
+          wheels=("$RUNNER_TEMP/access-dist/"*.whl)
+          sdists=("$RUNNER_TEMP/access-dist/"*.tar.gz)
+          test "${#wheels[@]}" -eq 1
+          test "${#sdists[@]}" -eq 1
+          artifacts=("${wheels[@]}" "${sdists[@]}")
+          for artifact in "${artifacts[@]}"; do
+            target_env="$RUNNER_TEMP/access-smoke-$(basename "$artifact")"
+            # uv venv is unseeded; sdist build tooling stays in build isolation.
+            uv venv --python 3.11 "$target_env"
+            uv pip install --python "$target_env/bin/python" --no-deps "$artifact"
+            "$target_env/bin/python" -I -c 'import os, nirs4all_access; assert nirs4all_access.__version__ == os.environ["ACCESS_VERSION"]'
+            "$target_env/bin/python" -I \
+              "$GITHUB_WORKSPACE/packages/nirs4all-access/tests/check_vectors.py" \
+              "$GITHUB_WORKSPACE/packages/nirs4all-access/tests/vectors/project-token-v1.json"
+          done
+          sha256sum "${artifacts[@]}"
+      - name: Upload checked Access distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: access-dist
+          path: |
+            ${{ runner.temp }}/access-dist/*.whl
+            ${{ runner.temp }}/access-dist/*.tar.gz
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish Access to PyPI (Trusted Publishing)
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/access-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nirs4all-access
+    permissions:
+      id-token: write
+    steps:
+      - name: Download checked Access distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: access-dist
+          path: access-dist
+      - name: Publish Access to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: access-dist/

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "nirs4all-access"
 version = "0.1.0"
 description = "Standard-library project-token authentication contract"
+readme = "CONTRACT.md"
 requires-python = ">=3.11"
 dependencies = []
 license = "CeCILL-2.1 OR AGPL-3.0-or-later"
