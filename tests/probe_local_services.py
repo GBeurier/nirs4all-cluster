@@ -144,9 +144,11 @@ def main(*, evidence: Path | None = None):
                     "info",
                 ],
                 cwd=tmp,
-                env=dict(
-                    env, NIRS4ALL_PROJECT_TOKEN=credentials["provider"][0], N4CLUSTER_TOKEN=credentials["provider"][0]
-                ),
+                env={
+                    **env,
+                    "NIRS4ALL_PROJECT_TOKEN": credentials["provider"][0],
+                    "N4CLUSTER_TOKEN": credentials["provider"][0],
+                },
                 stdout=logfiles[-1],
                 stderr=subprocess.STDOUT,
             )
