@@ -318,11 +318,11 @@ def test_real_worker_cli_http_status_is_visible_without_trace(tmp_path, status):
                 "0",
             ],
             cwd=tmp_path,
-            env=dict(
-                os.environ,
-                PYTHONPATH=os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]),
-                NIRS4ALL_PROJECT_TOKEN=token,
-            ),
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]),
+                "NIRS4ALL_PROJECT_TOKEN": token,
+            },
             capture_output=True,
             text=True,
             timeout=10,
