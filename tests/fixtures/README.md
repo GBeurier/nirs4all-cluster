@@ -20,3 +20,10 @@ qualification (`tests/probe_local_services.py`) retains its fresh output **only 
 scratch evidence** and never regenerates this fixture or its sidecar. Replacement
 requires the explicit authoring tool's `--replace-fixture` flag and review of the
 new sidecar/provenance together; it is not part of qualification.
+
+The secret-scanner baseline records the seven SHA-256 provenance digests in
+`owner-python-1.0.json`: the archive, generator, four generated inputs, and pipeline.
+The additional Base64 entry for `tests/probe_local_services.py` identifies a local
+dataset directory path. Each reviewed false positive is scoped to its file,
+detector type, and exact value fingerprint; changed values require review.
+Scanner settings and coverage remain unchanged.
