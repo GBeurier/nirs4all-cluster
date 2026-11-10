@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Set up Python
         run: uv python install 3.11
       - name: Validate stable version and release tag
@@ -88,6 +88,6 @@ jobs:
           name: access-dist
           path: access-dist
       - name: Publish Access to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: access-dist/
